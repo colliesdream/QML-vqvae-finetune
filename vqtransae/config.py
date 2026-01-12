@@ -8,7 +8,7 @@ class Config:
 
     # Data paths
     ORIGINAL_DATA_DIR = './dataset/BIKE'
-    PROCESSED_DATA_DIR = '/Volumes/hardware/UNL_smart_bike_code/anomaly_lable/vqtransae/processed_data'
+    PROCESSED_DATA_DIR = './vqtransae/processed_data'
     OUTPUT_DIR = './vqtransae_results'
 
     # Optional pretrained model path
