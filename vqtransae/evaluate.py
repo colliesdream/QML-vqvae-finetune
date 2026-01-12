@@ -135,7 +135,12 @@ def evaluate_model(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
     print(f"Device: {device}")
 
     print("\nLoad model...")
@@ -162,7 +167,9 @@ def evaluate_model(
     print(f"Active tokens: {active_tokens}")
 
     print("\nBuild DataLoaders...")
-    _, val_loader, test_loader = create_dataloaders(data_dir)
+    _, val_loader, test_loader = create_dataloaders(
+        data_dir, Config.WIN_SIZE, Config.STEP, Config.BATCH_SIZE
+    )
     print(f"Val windows: {len(val_loader.dataset)}")
     print(f"Test windows: {len(test_loader.dataset)}")
 
