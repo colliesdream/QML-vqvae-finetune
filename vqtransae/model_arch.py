@@ -104,15 +104,22 @@ class SeqEncoder(nn.Module):
 # ——————————— Vector Quantizer with EMA ——————————— #
 class VectorQuantizerEMA(nn.Module):
     """Vector quantizer with exponential moving average codebook updates."""
-    def __init__(self, K=512, D=32, decay=0.99, eps=1e-5, commitment_cost=0.25):
+    def __init__(self, K=512, D=32, decay=0.99, eps=1e-5, commitment_cost=0.25,
+                 commitment_loss_fn: nn.Module = None):
         super().__init__()
         self.K, self.D, self.decay, self.eps = K, D, decay, eps
         self.commitment_cost = commitment_cost
+        self.commitment_loss_fn = commitment_loss_fn
+        self.ema_update = True
 
         self.embed = nn.Embedding(K, D)
         self.register_buffer('ema_count', torch.zeros(K))
         self.register_buffer('ema_weight', self.embed.weight.data.clone())
         nn.init.kaiming_uniform_(self.embed.weight)
+
+    def set_ema_update(self, enabled: bool) -> None:
+        """Enable or disable EMA updates (useful for warm-up stages)."""
+        self.ema_update = enabled
 
     def forward(self, z_e):
         flat = z_e.reshape(-1, self.D)
@@ -125,7 +132,7 @@ class VectorQuantizerEMA(nn.Module):
         encodings = F.one_hot(encoding_indices, self.K).float()
         quantized = self.embed(encoding_indices).view_as(z_e)
 
-        if self.training:
+        if self.training and self.ema_update:
             self.ema_count = self.decay * self.ema_count + (1 - self.decay) * torch.sum(encodings, dim=0)
             n = torch.sum(self.ema_count)
             weights = ((self.ema_count + self.eps) / (n + self.K * self.eps)) * n
@@ -134,8 +141,12 @@ class VectorQuantizerEMA(nn.Module):
             self.embed.weight.data = self.ema_weight / weights.unsqueeze(1)
 
         e_latent_loss = F.mse_loss(quantized.detach(), z_e)
-        q_latent_loss = F.mse_loss(quantized, z_e.detach())
-        loss = e_latent_loss + self.commitment_cost * q_latent_loss
+        if self.commitment_loss_fn is None:
+            q_latent_loss = F.mse_loss(quantized, z_e.detach())
+            loss = e_latent_loss + self.commitment_cost * q_latent_loss
+        else:
+            q_latent_loss = self.commitment_loss_fn(z_e, quantized)
+            loss = e_latent_loss + q_latent_loss
 
         quantized = z_e + (quantized - z_e).detach()
         return quantized, loss, encoding_indices
@@ -194,11 +205,19 @@ class VQTransAE(nn.Module):
     def __init__(self, win_size, in_dim=6,
                  hidden=64, latent=32,
                  codebook=512, d_model=64,
-                 heads=4, layers=3, dropout=0.1):
+                 heads=4, layers=3, dropout=0.1,
+                 commitment_loss_fn: nn.Module = None):
         super().__init__()
 
         self.encoder = SeqEncoder(in_dim, hidden, latent, n_layers=2, bidirectional=True, dropout=dropout)
-        self.quant = VectorQuantizerEMA(codebook, latent, decay=0.99, eps=1e-5, commitment_cost=0.25)
+        self.quant = VectorQuantizerEMA(
+            codebook,
+            latent,
+            decay=0.99,
+            eps=1e-5,
+            commitment_cost=0.25,
+            commitment_loss_fn=commitment_loss_fn
+        )
         self.embed = nn.Linear(latent, d_model)
         self.tcn = TCN(d_model, [d_model, d_model, d_model], kernel_size=3, dropout=dropout)
         self.tf_layers = nn.ModuleList([
