@@ -29,11 +29,11 @@ class Config:
 
     # Data parameters
     STEP = 5             # Sliding window stride
-    BATCH_SIZE = 64      # Batch size
+    BATCH_SIZE = 2       # Batch size
     VAL_RATIO = 0.15     # Validation split ratio
 
     # Training parameters
-    EPOCHS = 100         # Training epochs
+    EPOCHS = 25          # Training epochs
     LEARNING_RATE = 1e-4 # Base learning rate
     CODEBOOK_LR = 5e-4   # Higher LR for codebook
     WEIGHT_DECAY = 1e-5  # Weight decay
@@ -47,7 +47,8 @@ class Config:
     # Quantum commitment loss (placeholder)
     USE_QUANTUM_COMMITMENT = False  # Enable quantum-style commitment loss
     QUANTUM_WEIGHT = 1.0            # Lambda for quantum loss
-    QUANTUM_NUM_QUBITS = 8          # Projection size for placeholder
+    QUANTUM_NUM_QUBITS = 8          # Number of qubits for VQC
+    QUANTUM_NUM_LAYERS = 1          # VQC layers (hardware-efficient ansatz)
     QUANTUM_WARMUP_EPOCHS = 25      # Freeze non-quantum params for warm-up
     QUANTUM_LR = 1e-4               # Learning rate for quantum module
 

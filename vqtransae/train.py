@@ -227,6 +227,7 @@ def train_model(
         commitment_loss_fn = QuantumCommitmentLoss(
             latent_dim=config.LATENT_DIM,
             num_qubits=config.QUANTUM_NUM_QUBITS,
+            num_layers=config.QUANTUM_NUM_LAYERS,
             weight=config.QUANTUM_WEIGHT
         )
 
