@@ -44,6 +44,13 @@ class Config:
     DIVERSITY_WEIGHT = 0.2     # Diversity regularization weight
     VQ_WEIGHT_BASE = 2.0       # Base VQ loss weight
 
+    # Quantum commitment loss (placeholder)
+    USE_QUANTUM_COMMITMENT = False  # Enable quantum-style commitment loss
+    QUANTUM_WEIGHT = 1.0            # Lambda for quantum loss
+    QUANTUM_NUM_QUBITS = 8          # Projection size for placeholder
+    QUANTUM_WARMUP_EPOCHS = 25      # Freeze non-quantum params for warm-up
+    QUANTUM_LR = 1e-4               # Learning rate for quantum module
+
     # Codebook refresh
     REFRESH_EVERY = 5          # Refresh every N epochs
     MIN_USAGE_THRESHOLD = 10   # Minimum usage count
