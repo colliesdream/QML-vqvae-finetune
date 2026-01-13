@@ -108,3 +108,26 @@ We will consider the integration viable if:
 
 - Output scale does **not** need to match classical L2 exactly; it can be aligned by tuning `λ`.
 - Fidelity provides a bounded similarity score in `[0, 1]`, which stabilizes the loss.
+
+## Observability (Outputs to Track)
+
+We will track **three outputs** to observe the impact of the VQC integration:
+
+1. **Fidelity / similarity value**
+   - Log the batch mean (and optionally min/max) of the fidelity score.
+2. **Reconstruction outputs**
+   - Save reconstructed samples periodically to visually compare quality.
+3. **Loss curves**
+   - Track `recon_loss`, `quantum_commit_loss`, and `total_loss` over time.
+   - Use the same run to compare these curves; a separate baseline run is optional.
+
+## Fidelity (Explanation)
+
+Fidelity measures **how similar two quantum states are**. For states |ψ_e⟩ and |ψ_q⟩,
+
+```
+Fidelity = |⟨ψ_e | ψ_q⟩|^2
+```
+
+- **Range:** `[0, 1]` (1 means identical, 0 means orthogonal).
+- We use **`1 - Fidelity`** as a distance-like term in the quantum commitment loss.
