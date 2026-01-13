@@ -13,6 +13,7 @@ import torch.optim as optim
 
 from .config import Config
 from .data import create_dataloaders
+from .quantum import QuantumCommitmentLoss
 from .utils import save_json, token_stats
 from .visualize import plot_training_curves
 
@@ -81,6 +82,31 @@ def refresh_inactive_codes(model, usage_counts: np.ndarray, min_usage: int, reus
             embed[dormant_tensor] = noise
 
     return int(dormant.size)
+
+
+def set_requires_grad(module: nn.Module, requires_grad: bool) -> None:
+    """Toggle gradients for all parameters in a module."""
+    for param in module.parameters():
+        param.requires_grad = requires_grad
+
+
+def configure_quantum_warmup(model: nn.Module, enable: bool) -> None:
+    """Freeze/unfreeze non-quantum modules and toggle EMA updates."""
+    set_requires_grad(model, not enable)
+    if hasattr(model, 'quant') and hasattr(model.quant, 'commitment_loss_fn'):
+        commitment = model.quant.commitment_loss_fn
+        if commitment is not None:
+            set_requires_grad(commitment, True)
+    if hasattr(model, 'quant') and hasattr(model.quant, 'set_ema_update'):
+        model.quant.set_ema_update(not enable)
+
+
+def update_quantum_weight(model: nn.Module, weight: float) -> None:
+    """Update quantum loss weight if the module supports it."""
+    if hasattr(model, 'quant') and hasattr(model.quant, 'commitment_loss_fn'):
+        commitment = model.quant.commitment_loss_fn
+        if commitment is not None and hasattr(commitment, 'set_weight'):
+            commitment.set_weight(weight)
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +222,14 @@ def train_model(
     print("\nInit model...")
     from .model_arch import VQTransAE
 
+    commitment_loss_fn = None
+    if config.USE_QUANTUM_COMMITMENT:
+        commitment_loss_fn = QuantumCommitmentLoss(
+            latent_dim=config.LATENT_DIM,
+            num_qubits=config.QUANTUM_NUM_QUBITS,
+            weight=config.QUANTUM_WEIGHT
+        )
+
     model = VQTransAE(
         win_size=config.WIN_SIZE,
         in_dim=config.IN_DIM,
@@ -204,7 +238,8 @@ def train_model(
         codebook=config.CODEBOOK_SIZE,
         d_model=config.D_MODEL,
         heads=config.N_HEADS,
-        layers=config.N_LAYERS
+        layers=config.N_LAYERS,
+        commitment_loss_fn=commitment_loss_fn
     ).to(device)
 
     print("Reinit codebook weights (important)")
@@ -218,12 +253,25 @@ def train_model(
         model.load_state_dict(filtered_state, strict=False)
         print("Loaded encoder/decoder weights (codebook skipped)")
 
-    optimizer = optim.AdamW([
+    quantum_params = []
+    if config.USE_QUANTUM_COMMITMENT and model.quant.commitment_loss_fn is not None:
+        quantum_params = list(model.quant.commitment_loss_fn.parameters())
+
+    quantum_param_ids = {id(param) for param in quantum_params}
+    quant_params = [param for param in model.quant.parameters() if id(param) not in quantum_param_ids]
+
+    optimizer_groups = [
         {'params': model.encoder.parameters(), 'lr': config.LEARNING_RATE},
         {'params': model.decoder.parameters(), 'lr': config.LEARNING_RATE},
-        {'params': model.quant.parameters(), 'lr': config.CODEBOOK_LR},
         {'params': model.tf_layers.parameters(), 'lr': config.LEARNING_RATE},
-    ], weight_decay=config.WEIGHT_DECAY)
+        {'params': model.embed.parameters(), 'lr': config.LEARNING_RATE},
+        {'params': model.tcn.parameters(), 'lr': config.LEARNING_RATE},
+        {'params': quant_params, 'lr': config.CODEBOOK_LR},
+    ]
+    if quantum_params:
+        optimizer_groups.append({'params': quantum_params, 'lr': config.QUANTUM_LR})
+
+    optimizer = optim.AdamW(optimizer_groups, weight_decay=config.WEIGHT_DECAY)
 
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
@@ -237,9 +285,22 @@ def train_model(
     print(f"Entropy weight: {config.ENTROPY_WEIGHT}")
     print(f"Diversity weight: {config.DIVERSITY_WEIGHT}")
     print(f"VQ weight base: {config.VQ_WEIGHT_BASE}")
+    if config.USE_QUANTUM_COMMITMENT:
+        print(f"Quantum commitment: enabled (warmup {config.QUANTUM_WARMUP_EPOCHS} epochs)")
     print("=" * 70)
 
+    if config.USE_QUANTUM_COMMITMENT and config.QUANTUM_WARMUP_EPOCHS > 0:
+        configure_quantum_warmup(model, enable=True)
+
     for epoch in range(1, epochs + 1):
+        if config.USE_QUANTUM_COMMITMENT and config.QUANTUM_WARMUP_EPOCHS > 0:
+            if epoch == config.QUANTUM_WARMUP_EPOCHS + 1:
+                configure_quantum_warmup(model, enable=False)
+
+        if config.USE_QUANTUM_COMMITMENT and config.QUANTUM_WARMUP_EPOCHS > 0:
+            warmup_scale = min(1.0, epoch / config.QUANTUM_WARMUP_EPOCHS)
+            update_quantum_weight(model, config.QUANTUM_WEIGHT * warmup_scale)
+
         if epoch < 30:
             vq_weight = config.VQ_WEIGHT_BASE * 1.5
         elif epoch < 60:
