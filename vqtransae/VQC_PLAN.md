@@ -66,6 +66,16 @@ Notes:
 - Unfreeze encoder and codebook.
 - Jointly optimize reconstruction + VQ loss + quantum commitment loss.
 
+## Implementation Notes (PennyLane + JAX)
+
+- Use a **PennyLane `default.qubit` device** with `interface="jax"` and `diff_method="best"` for the VQC.
+- Wrap the VQC in a **JAX-jitted forward function** and compute gradients via **`jax.vjp`** for efficient vector-Jacobian products.
+- For a PyTorch pipeline, build a **custom autograd bridge** that:
+  - Converts tensors to JAX arrays (`jnp.array`), runs the JIT-compiled forward, and returns results as Torch tensors.
+  - Uses the saved inputs/weights in `backward` to call the JIT-compiled VJP function and convert gradients back to Torch.
+- Keep an explicit **mini-batch loop** around the VQC call to limit JAX memory usage.
+- Default to **CPU backend** for JAX during initial integration to simplify environment setup and debugging.
+
 ## Success Criteria (Initial Experiments)
 
 We will consider the integration viable if:
