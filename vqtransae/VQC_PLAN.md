@@ -43,6 +43,29 @@ toward quantum space.
 - The temperature `τ` controls how “soft” the top-4 update is.
 - We can add a hybrid fallback (one-hot + quantum weights) if stability is an issue.
 
+### Hypothesis: Why Quantum-EMA Could Outperform Classic EMA
+
+- **Richer assignment signal:** EMA uses hard one-hot assignments, while quantum
+  similarity provides a graded signal that can update multiple nearby tokens,
+  potentially improving codebook coverage and representation smoothness.
+- **Alignment with VQC embedding:** If the VQC captures useful similarity structure,
+  codebook updates that follow quantum similarity may better match downstream
+  anomaly scoring.
+- **Controlled softness:** The temperature `τ` allows interpolation between
+  hard (EMA-like) and soft updates without changing token selection logic.
+
+### Evidence Plan (to validate superiority vs EMA)
+
+1. **Ablation vs classic EMA**
+   - Compare baseline EMA vs quantum-EMA (Top-4) with identical training budgets.
+2. **Core metrics**
+   - Reconstruction loss trajectory.
+   - Active token count + perplexity (codebook health).
+   - Test-set anomaly metrics (Precision/Recall/F1).
+3. **Stability checks**
+   - Monitor quantum similarity distribution (mean/min/max) to detect collapse.
+   - Track whether top-4 weights become too peaky (τ too low) or too flat (τ too high).
+
 This document captures the current agreed direction for integrating a trainable VQC into the VQ-VAE pipeline, based on the latest discussion. The goal is to use a quantum circuit to produce a similarity/distance score that replaces the classical commitment distance between encoder output and codebook selection.
 
 ## Objective
