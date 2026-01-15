@@ -7,6 +7,42 @@ training pipeline with a PennyLane + JAX implementation, configuration toggles,
 warm-up scheduling, and evaluation that tolerates optional quantum parameters.
 The next phase focuses on experimentation, tuning, and stability analysis.
 
+## Phase 2 Draft: Quantum-EMA Codebook Update (Top-4 Soft Update)
+
+Goal: keep **classical L2 token selection** for stability, but update the codebook
+using **quantum similarity-weighted EMA** so the representation learning is biased
+toward quantum space.
+
+### Draft Update Flow (per batch)
+
+1. **Classical top-K selection (K=4)**
+   - For each `z_e`, compute L2 distance to all codebook entries.
+   - Keep the top-4 nearest tokens (indices).
+2. **Quantum similarity for top-4 only**
+   - For each `(z_e, E_k)` pair in top-4, compute fidelity via the existing VQC.
+   - This reuses the current VQC circuit (same as commitment loss), but treats
+     fidelity as a **soft similarity score**.
+3. **Soft weights from similarity**
+   - Convert the 4 fidelity scores into weights using softmax with temperature `τ`:
+     `w_k = softmax(fidelity / τ)`.
+4. **Quantum-weighted EMA update**
+   - Replace one-hot EMA updates with weighted updates:
+     - `ema_count[k] = decay * ema_count[k] + (1 - decay) * Σ_batch w_k`
+     - `ema_weight[k] = decay * ema_weight[k] + (1 - decay) * Σ_batch (w_k * z_e)`
+   - Update codebook vectors as usual:
+     `E_k = ema_weight[k] / (ema_count[k] + eps)`
+
+### Expected Cost
+
+- Each fidelity uses 2 VQC forwards (one for `z_e`, one for `E_k`).
+- Per batch cost ≈ `B * 4 * 2` VQC forward calls.
+
+### Notes / Open Items
+
+- Keep the quantum commitment loss optional; this phase only targets codebook updates.
+- The temperature `τ` controls how “soft” the top-4 update is.
+- We can add a hybrid fallback (one-hot + quantum weights) if stability is an issue.
+
 This document captures the current agreed direction for integrating a trainable VQC into the VQ-VAE pipeline, based on the latest discussion. The goal is to use a quantum circuit to produce a similarity/distance score that replaces the classical commitment distance between encoder output and codebook selection.
 
 ## Objective
