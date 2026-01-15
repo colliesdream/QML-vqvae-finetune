@@ -60,6 +60,28 @@ def _fidelity_batch(
     return jnp.mean(fidelities)
 
 
+def _fidelity_per_sample(
+    z_e: jnp.ndarray,
+    z_q: jnp.ndarray,
+    proj_w: jnp.ndarray,
+    proj_b: jnp.ndarray,
+    weights: jnp.ndarray,
+    num_qubits: int,
+    num_layers: int,
+) -> jnp.ndarray:
+    qnode = _build_state_circuit(num_qubits, num_layers)
+    angles_e = jnp.dot(z_e, proj_w.T) + proj_b
+    angles_q = jnp.dot(z_q, proj_w.T) + proj_b
+
+    def single_fidelity(ae, aq):
+        psi_e = qnode(ae, weights)
+        psi_q = qnode(aq, weights)
+        overlap = jnp.vdot(psi_e, psi_q)
+        return jnp.abs(overlap) ** 2
+
+    return jax.vmap(single_fidelity)(angles_e, angles_q)
+
+
 class _QuantumCommitmentFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, z_e, z_q, proj_w, proj_b, weights, weight, num_qubits: int, num_layers: int):
@@ -156,3 +178,25 @@ class QuantumCommitmentLoss(nn.Module):
             self.num_qubits,
             self.num_layers,
         )
+
+    def fidelity(self, z_e: torch.Tensor, z_q: torch.Tensor) -> torch.Tensor:
+        """Compute per-sample fidelity scores without gradients."""
+        z_e_flat = z_e.reshape(-1, z_e.shape[-1])
+        z_q_flat = z_q.reshape(-1, z_q.shape[-1])
+
+        z_e_np = np.asarray(z_e_flat.detach().cpu())
+        z_q_np = np.asarray(z_q_flat.detach().cpu())
+        proj_w_np = np.asarray(self.proj_weight.detach().cpu())
+        proj_b_np = np.asarray(self.proj_bias.detach().cpu())
+        weights_np = np.asarray(self.vqc_weights.detach().cpu())
+
+        fidelities = _fidelity_per_sample(
+            jnp.array(z_e_np),
+            jnp.array(z_q_np),
+            jnp.array(proj_w_np),
+            jnp.array(proj_b_np),
+            jnp.array(weights_np),
+            self.num_qubits,
+            self.num_layers,
+        )
+        return torch.tensor(np.asarray(fidelities), device=z_e.device, dtype=z_e.dtype)

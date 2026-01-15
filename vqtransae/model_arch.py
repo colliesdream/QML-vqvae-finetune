@@ -105,12 +105,16 @@ class SeqEncoder(nn.Module):
 class VectorQuantizerEMA(nn.Module):
     """Vector quantizer with exponential moving average codebook updates."""
     def __init__(self, K=512, D=32, decay=0.99, eps=1e-5, commitment_cost=0.25,
-                 commitment_loss_fn: nn.Module = None):
+                 commitment_loss_fn: nn.Module = None, use_quantum_ema: bool = False,
+                 quantum_ema_topk: int = 4, quantum_ema_tau: float = 0.5):
         super().__init__()
         self.K, self.D, self.decay, self.eps = K, D, decay, eps
         self.commitment_cost = commitment_cost
         self.commitment_loss_fn = commitment_loss_fn
         self.ema_update = True
+        self.use_quantum_ema = use_quantum_ema
+        self.quantum_ema_topk = quantum_ema_topk
+        self.quantum_ema_tau = quantum_ema_tau
 
         self.embed = nn.Embedding(K, D)
         self.register_buffer('ema_count', torch.zeros(K))
@@ -133,12 +137,43 @@ class VectorQuantizerEMA(nn.Module):
         quantized = self.embed(encoding_indices).view_as(z_e)
 
         if self.training and self.ema_update:
-            self.ema_count = self.decay * self.ema_count + (1 - self.decay) * torch.sum(encodings, dim=0)
-            n = torch.sum(self.ema_count)
-            weights = ((self.ema_count + self.eps) / (n + self.K * self.eps)) * n
-            dw = torch.matmul(encodings.t(), flat)
-            self.ema_weight = self.decay * self.ema_weight + (1 - self.decay) * dw
-            self.embed.weight.data = self.ema_weight / weights.unsqueeze(1)
+            if self.use_quantum_ema:
+                if not hasattr(self.commitment_loss_fn, 'fidelity'):
+                    raise RuntimeError("Quantum EMA requires a commitment_loss_fn with fidelity().")
+                topk = min(self.quantum_ema_topk, self.K)
+                with torch.no_grad():
+                    _, topk_indices = torch.topk(dist, k=topk, dim=1, largest=False)
+                    topk_embeddings = self.embed(topk_indices)
+
+                    fidelity_scores = []
+                    for k in range(topk):
+                        fidelity_scores.append(
+                            self.commitment_loss_fn.fidelity(flat, topk_embeddings[:, k, :])
+                        )
+                    fidelities = torch.stack(fidelity_scores, dim=1)
+                    weights = torch.softmax(fidelities / self.quantum_ema_tau, dim=1)
+
+                    ema_count_update = torch.zeros(self.K, device=flat.device)
+                    ema_weight_update = torch.zeros(self.K, self.D, device=flat.device)
+
+                    for k in range(topk):
+                        indices_k = topk_indices[:, k]
+                        weights_k = weights[:, k]
+                        ema_count_update.scatter_add_(0, indices_k, weights_k)
+                        ema_weight_update.index_add_(0, indices_k, weights_k.unsqueeze(1) * flat)
+
+                    self.ema_count = self.decay * self.ema_count + (1 - self.decay) * ema_count_update
+                    n = torch.sum(self.ema_count)
+                    weight_norm = ((self.ema_count + self.eps) / (n + self.K * self.eps)) * n
+                    self.ema_weight = self.decay * self.ema_weight + (1 - self.decay) * ema_weight_update
+                    self.embed.weight.data = self.ema_weight / weight_norm.unsqueeze(1)
+            else:
+                self.ema_count = self.decay * self.ema_count + (1 - self.decay) * torch.sum(encodings, dim=0)
+                n = torch.sum(self.ema_count)
+                weights = ((self.ema_count + self.eps) / (n + self.K * self.eps)) * n
+                dw = torch.matmul(encodings.t(), flat)
+                self.ema_weight = self.decay * self.ema_weight + (1 - self.decay) * dw
+                self.embed.weight.data = self.ema_weight / weights.unsqueeze(1)
 
         e_latent_loss = F.mse_loss(quantized.detach(), z_e)
         if self.commitment_loss_fn is None:
@@ -206,7 +241,10 @@ class VQTransAE(nn.Module):
                  hidden=64, latent=32,
                  codebook=512, d_model=64,
                  heads=4, layers=3, dropout=0.1,
-                 commitment_loss_fn: nn.Module = None):
+                 commitment_loss_fn: nn.Module = None,
+                 use_quantum_ema: bool = False,
+                 quantum_ema_topk: int = 4,
+                 quantum_ema_tau: float = 0.5):
         super().__init__()
 
         self.encoder = SeqEncoder(in_dim, hidden, latent, n_layers=2, bidirectional=True, dropout=dropout)
@@ -216,7 +254,10 @@ class VQTransAE(nn.Module):
             decay=0.99,
             eps=1e-5,
             commitment_cost=0.25,
-            commitment_loss_fn=commitment_loss_fn
+            commitment_loss_fn=commitment_loss_fn,
+            use_quantum_ema=use_quantum_ema,
+            quantum_ema_topk=quantum_ema_topk,
+            quantum_ema_tau=quantum_ema_tau,
         )
         self.embed = nn.Linear(latent, d_model)
         self.tcn = TCN(d_model, [d_model, d_model, d_model], kernel_size=3, dropout=dropout)
