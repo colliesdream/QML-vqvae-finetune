@@ -291,6 +291,11 @@ def train_model(
     print(f"VQ weight base: {config.VQ_WEIGHT_BASE}")
     if config.USE_QUANTUM_COMMITMENT:
         print(f"Quantum commitment: enabled (warmup {config.QUANTUM_WARMUP_EPOCHS} epochs)")
+    if config.USE_QUANTUM_EMA:
+        print(
+            "Quantum EMA: enabled "
+            f"(topk={config.QUANTUM_EMA_TOPK}, tau={config.QUANTUM_EMA_TAU})"
+        )
     print("=" * 70)
 
     if config.USE_QUANTUM_COMMITMENT and config.QUANTUM_WARMUP_EPOCHS > 0:
