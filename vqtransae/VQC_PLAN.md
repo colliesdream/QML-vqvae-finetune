@@ -1,5 +1,12 @@
 # VQC Integration Plan (Current Progress Summary)
 
+## Phase 1 Completion (Integration Milestone)
+
+Phase 1 is complete: the quantum commitment loss is now integrated into the
+training pipeline with a PennyLane + JAX implementation, configuration toggles,
+warm-up scheduling, and evaluation that tolerates optional quantum parameters.
+The next phase focuses on experimentation, tuning, and stability analysis.
+
 This document captures the current agreed direction for integrating a trainable VQC into the VQ-VAE pipeline, based on the latest discussion. The goal is to use a quantum circuit to produce a similarity/distance score that replaces the classical commitment distance between encoder output and codebook selection.
 
 ## Objective

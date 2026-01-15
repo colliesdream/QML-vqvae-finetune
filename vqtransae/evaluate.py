@@ -160,7 +160,11 @@ def evaluate_model(
         heads=hyper['heads'], layers=hyper['layers']
     ).to(device)
 
-    model.load_state_dict(checkpoint['state_dict'])
+    incompatible = model.load_state_dict(checkpoint['state_dict'], strict=False)
+    if incompatible.unexpected_keys:
+        print("Warning: unexpected keys in checkpoint state_dict (ignored):")
+        for key in incompatible.unexpected_keys:
+            print(f"  - {key}")
     model.eval()
 
     active_tokens = checkpoint.get('active_tokens', 'N/A')

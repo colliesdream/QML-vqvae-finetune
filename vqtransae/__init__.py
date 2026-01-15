@@ -60,6 +60,7 @@ from .visualize import (
 )
 from .pipeline import run_complete_pipeline
 from .model_arch import VQTransAE
+from .quantum import QuantumCommitmentLoss
 
 __all__ = [
     'Config',
@@ -70,5 +71,6 @@ __all__ = [
     'train_epoch', 'validate', 'train_model',
     'compute_scores', 'compute_composite_score', 'evaluate_with_threshold', 'evaluate_model',
     'plot_training_curves', 'plot_evaluation_results',
-    'run_complete_pipeline'
+    'run_complete_pipeline',
+    'QuantumCommitmentLoss'
 ]
