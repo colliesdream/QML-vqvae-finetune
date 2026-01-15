@@ -240,7 +240,10 @@ def train_model(
         d_model=config.D_MODEL,
         heads=config.N_HEADS,
         layers=config.N_LAYERS,
-        commitment_loss_fn=commitment_loss_fn
+        commitment_loss_fn=commitment_loss_fn,
+        use_quantum_ema=config.USE_QUANTUM_EMA,
+        quantum_ema_topk=config.QUANTUM_EMA_TOPK,
+        quantum_ema_tau=config.QUANTUM_EMA_TAU,
     ).to(device)
 
     print("Reinit codebook weights (important)")
