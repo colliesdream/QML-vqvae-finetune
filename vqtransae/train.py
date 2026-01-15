@@ -240,7 +240,10 @@ def train_model(
         d_model=config.D_MODEL,
         heads=config.N_HEADS,
         layers=config.N_LAYERS,
-        commitment_loss_fn=commitment_loss_fn
+        commitment_loss_fn=commitment_loss_fn,
+        use_quantum_ema=config.USE_QUANTUM_EMA,
+        quantum_ema_topk=config.QUANTUM_EMA_TOPK,
+        quantum_ema_tau=config.QUANTUM_EMA_TAU,
     ).to(device)
 
     print("Reinit codebook weights (important)")
@@ -288,6 +291,11 @@ def train_model(
     print(f"VQ weight base: {config.VQ_WEIGHT_BASE}")
     if config.USE_QUANTUM_COMMITMENT:
         print(f"Quantum commitment: enabled (warmup {config.QUANTUM_WARMUP_EPOCHS} epochs)")
+    if config.USE_QUANTUM_EMA:
+        print(
+            "Quantum EMA: enabled "
+            f"(topk={config.QUANTUM_EMA_TOPK}, tau={config.QUANTUM_EMA_TAU})"
+        )
     print("=" * 70)
 
     if config.USE_QUANTUM_COMMITMENT and config.QUANTUM_WARMUP_EPOCHS > 0:

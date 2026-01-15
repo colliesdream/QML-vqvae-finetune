@@ -51,6 +51,9 @@ class Config:
     QUANTUM_NUM_LAYERS = 1          # VQC layers (hardware-efficient ansatz)
     QUANTUM_WARMUP_EPOCHS = 25      # Freeze non-quantum params for warm-up
     QUANTUM_LR = 1e-4               # Learning rate for quantum module
+    USE_QUANTUM_EMA = False         # Use quantum similarity for EMA updates
+    QUANTUM_EMA_TOPK = 4            # Top-K tokens for quantum EMA
+    QUANTUM_EMA_TAU = 0.5           # Softmax temperature for quantum weights
 
     # Codebook refresh
     REFRESH_EVERY = 5          # Refresh every N epochs
