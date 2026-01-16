@@ -55,6 +55,13 @@ class Config:
     QUANTUM_EMA_TOPK = 4            # Top-K tokens for quantum EMA
     QUANTUM_EMA_TAU = 0.5           # Softmax temperature for quantum weights
 
+    # QKernel feature mapping before VQ
+    USE_QKERNEL = False             # Enable qkernel feature mapping before VQ
+    QKERNEL_NUM_QUBITS = 8          # Number of qubits for qkernel feature map
+    QKERNEL_ANCHORS = 16            # Number of qkernel anchors (A)
+    QKERNEL_REFRESH_EVERY = 5       # Refresh anchors every N epochs
+    QKERNEL_MAX_SAMPLES = 5000      # Max samples for KMeans anchor fitting
+
     # Codebook refresh
     REFRESH_EVERY = 5          # Refresh every N epochs
     MIN_USAGE_THRESHOLD = 10   # Minimum usage count

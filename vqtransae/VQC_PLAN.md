@@ -43,6 +43,30 @@ toward quantum space.
 - The temperature `τ` controls how “soft” the top-4 update is.
 - We can add a hybrid fallback (one-hot + quantum weights) if stability is an issue.
 
+## Phase 3 Draft: QKernel Feature Mapping Before VQ
+
+Goal: insert a fixed (non-trainable) qkernel feature mapping between the encoder
+output `z_e` and the VQ module to improve representation quality before
+quantization. Codebook updates remain unchanged in this phase.
+
+### Draft Update Flow (per batch)
+
+1. **Encoder output**: produce `z_e` with shape `(B, T, LATENT_DIM=32)`.
+2. **QKernel mapping**:
+   - Use **A = 16** anchors derived from K-Means on `z_e`.
+   - Compute kernel features `k(z_e, anchor_i)` for each anchor.
+   - Output shape becomes `(B, T, A)`.
+3. **Linear projection**:
+   - Project `(B, T, A)` back to `(B, T, 32)` before VQ.
+4. **Anchor refresh cadence**:
+   - Recompute K-Means anchors **every 5 epochs**.
+
+### Implementation Decisions (Confirmed)
+
+- QKernel is **non-trainable** (fixed feature map).
+- `A = 16` anchors; `K = A` in K-Means.
+- Anchors are updated every 5 epochs (not every epoch) to control cost.
+
 ### Hypothesis: Why Quantum-EMA Could Outperform Classic EMA
 
 - **Richer assignment signal:** EMA uses hard one-hot assignments, while quantum

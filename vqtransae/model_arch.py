@@ -8,6 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from math import sqrt
 
+from .quantum import QuantumKernelMapper
+
 
 # ——————————— Relative Position Bias ——————————— #
 class RelPosBias(nn.Module):
@@ -244,10 +246,20 @@ class VQTransAE(nn.Module):
                  commitment_loss_fn: nn.Module = None,
                  use_quantum_ema: bool = False,
                  quantum_ema_topk: int = 4,
-                 quantum_ema_tau: float = 0.5):
+                 quantum_ema_tau: float = 0.5,
+                 use_qkernel: bool = False,
+                 qkernel_num_qubits: int = 8,
+                 qkernel_anchors: int = 16):
         super().__init__()
 
         self.encoder = SeqEncoder(in_dim, hidden, latent, n_layers=2, bidirectional=True, dropout=dropout)
+        self.use_qkernel = use_qkernel
+        self.qkernel_anchors = qkernel_anchors
+        if self.use_qkernel:
+            self.qkernel_mapper = QuantumKernelMapper(latent_dim=latent, num_qubits=qkernel_num_qubits)
+            self.qkernel_proj = nn.Linear(qkernel_anchors, latent)
+            self.register_buffer("qkernel_anchor_bank", torch.zeros(qkernel_anchors, latent))
+            self.qkernel_initialized = False
         self.quant = VectorQuantizerEMA(
             codebook,
             latent,
@@ -278,6 +290,11 @@ class VQTransAE(nn.Module):
 
     def forward(self, x):
         z_e = self.encoder(x)
+        if self.use_qkernel:
+            if not self.qkernel_initialized:
+                raise RuntimeError("QKernel anchors are not initialized.")
+            kernel_features = self.qkernel_mapper(z_e, self.qkernel_anchor_bank)
+            z_e = self.qkernel_proj(kernel_features)
         z_q, loss_vq, indices = self.quant(z_e)
         h = self.embed(z_q)
         h = self.tcn(h)
