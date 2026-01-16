@@ -249,6 +249,7 @@ class VQTransAE(nn.Module):
                  quantum_ema_tau: float = 0.5,
                  use_qkernel: bool = False,
                  qkernel_num_qubits: int = 8,
+                 qkernel_num_layers: int = 1,
                  qkernel_anchors: int = 16):
         super().__init__()
 
@@ -256,8 +257,13 @@ class VQTransAE(nn.Module):
         self.use_qkernel = use_qkernel
         self.qkernel_anchors = qkernel_anchors
         if self.use_qkernel:
-            self.qkernel_mapper = QuantumKernelMapper(latent_dim=latent, num_qubits=qkernel_num_qubits)
-            self.qkernel_proj = nn.Linear(qkernel_anchors, latent)
+            self.qkernel_mapper = QuantumKernelMapper(
+                latent_dim=latent,
+                num_qubits=qkernel_num_qubits,
+                num_layers=qkernel_num_layers,
+            )
+            if qkernel_anchors != latent:
+                raise ValueError("QKernel anchors must match latent dim when projection is disabled.")
             self.register_buffer("qkernel_anchor_bank", torch.zeros(qkernel_anchors, latent))
             self.qkernel_initialized = False
         self.quant = VectorQuantizerEMA(
@@ -294,7 +300,8 @@ class VQTransAE(nn.Module):
             if not self.qkernel_initialized:
                 raise RuntimeError("QKernel anchors are not initialized.")
             kernel_features = self.qkernel_mapper(z_e, self.qkernel_anchor_bank)
-            z_e = self.qkernel_proj(kernel_features)
+            kernel_features = kernel_features.view(z_e.shape[0], z_e.shape[1], -1)
+            z_e = kernel_features
         z_q, loss_vq, indices = self.quant(z_e)
         h = self.embed(z_q)
         h = self.tcn(h)

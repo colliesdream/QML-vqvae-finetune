@@ -58,7 +58,8 @@ class Config:
     # QKernel feature mapping before VQ
     USE_QKERNEL = False             # Enable qkernel feature mapping before VQ
     QKERNEL_NUM_QUBITS = 8          # Number of qubits for qkernel feature map
-    QKERNEL_ANCHORS = 16            # Number of qkernel anchors (A)
+    QKERNEL_ANCHORS = 32            # Number of qkernel anchors (A)
+    QKERNEL_NUM_LAYERS = 1          # Qkernel layers (enable entanglement)
     QKERNEL_REFRESH_EVERY = 5       # Refresh anchors every N epochs
     QKERNEL_MAX_SAMPLES = 5000      # Max samples for KMeans anchor fitting
 

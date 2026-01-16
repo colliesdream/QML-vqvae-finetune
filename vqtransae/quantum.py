@@ -85,17 +85,25 @@ def _fidelity_per_sample(
 class QuantumKernelMapper(nn.Module):
     """Fixed (non-trainable) qkernel feature mapper."""
 
-    def __init__(self, latent_dim: int, num_qubits: int = 8, seed: int = 42):
+    def __init__(
+        self,
+        latent_dim: int,
+        num_qubits: int = 8,
+        num_layers: int = 1,
+        seed: int = 42,
+    ):
         super().__init__()
         rng = np.random.default_rng(seed)
         proj_weight = rng.standard_normal((num_qubits, latent_dim)).astype(np.float32) / np.sqrt(latent_dim)
         proj_bias = np.zeros((num_qubits,), dtype=np.float32)
 
         self.num_qubits = num_qubits
-        self.num_layers = 0
+        self.num_layers = num_layers
         self.register_buffer("proj_weight", torch.tensor(proj_weight))
         self.register_buffer("proj_bias", torch.tensor(proj_bias))
-        self.register_buffer("fixed_weights", torch.zeros((0, num_qubits, 2)))
+        entangle_scale = 1.0 / np.sqrt(num_qubits)
+        fixed_weights = rng.standard_normal((num_layers, num_qubits, 2)).astype(np.float32) * entangle_scale
+        self.register_buffer("fixed_weights", torch.tensor(fixed_weights))
 
     def forward(self, z: torch.Tensor, anchors: torch.Tensor) -> torch.Tensor:
         """Return kernel features of shape (N, A) for z against anchors."""

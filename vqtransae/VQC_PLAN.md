@@ -53,18 +53,18 @@ quantization. Codebook updates remain unchanged in this phase.
 
 1. **Encoder output**: produce `z_e` with shape `(B, T, LATENT_DIM=32)`.
 2. **QKernel mapping**:
-   - Use **A = 16** anchors derived from K-Means on `z_e`.
+   - Use **A = 32** anchors derived from K-Means on `z_e`.
    - Compute kernel features `k(z_e, anchor_i)` for each anchor.
-   - Output shape becomes `(B, T, A)`.
-3. **Linear projection**:
-   - Project `(B, T, A)` back to `(B, T, 32)` before VQ.
+   - Output shape becomes `(B, T, 32)` (no compression).
+3. **Direct feed into VQ**:
+   - No linear projection; `(B, T, 32)` is passed directly to VQ.
 4. **Anchor refresh cadence**:
    - Recompute K-Means anchors **every 5 epochs**.
 
 ### Implementation Decisions (Confirmed)
 
-- QKernel is **non-trainable** (fixed feature map).
-- `A = 16` anchors; `K = A` in K-Means.
+- QKernel is **non-trainable** (fixed feature map) with **CNOT entanglement enabled**.
+- `A = 32` anchors; `K = A` in K-Means.
 - Anchors are updated every 5 epochs (not every epoch) to control cost.
 
 ### Hypothesis: Why Quantum-EMA Could Outperform Classic EMA

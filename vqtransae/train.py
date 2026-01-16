@@ -294,6 +294,7 @@ def train_model(
         quantum_ema_tau=config.QUANTUM_EMA_TAU,
         use_qkernel=config.USE_QKERNEL,
         qkernel_num_qubits=config.QKERNEL_NUM_QUBITS,
+        qkernel_num_layers=config.QKERNEL_NUM_LAYERS,
         qkernel_anchors=config.QKERNEL_ANCHORS,
     ).to(device)
 
@@ -350,7 +351,8 @@ def train_model(
     if config.USE_QKERNEL:
         print(
             "QKernel: enabled "
-            f"(anchors={config.QKERNEL_ANCHORS}, refresh={config.QKERNEL_REFRESH_EVERY} epochs)"
+            f"(anchors={config.QKERNEL_ANCHORS}, layers={config.QKERNEL_NUM_LAYERS}, "
+            f"refresh={config.QKERNEL_REFRESH_EVERY} epochs)"
         )
     print("=" * 70)
 
