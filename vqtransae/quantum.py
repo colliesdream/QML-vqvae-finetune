@@ -60,6 +60,77 @@ def _fidelity_batch(
     return jnp.mean(fidelities)
 
 
+def _fidelity_per_sample(
+    z_e: jnp.ndarray,
+    z_q: jnp.ndarray,
+    proj_w: jnp.ndarray,
+    proj_b: jnp.ndarray,
+    weights: jnp.ndarray,
+    num_qubits: int,
+    num_layers: int,
+) -> jnp.ndarray:
+    qnode = _build_state_circuit(num_qubits, num_layers)
+    angles_e = jnp.dot(z_e, proj_w.T) + proj_b
+    angles_q = jnp.dot(z_q, proj_w.T) + proj_b
+
+    def single_fidelity(ae, aq):
+        psi_e = qnode(ae, weights)
+        psi_q = qnode(aq, weights)
+        overlap = jnp.vdot(psi_e, psi_q)
+        return jnp.abs(overlap) ** 2
+
+    return jax.vmap(single_fidelity)(angles_e, angles_q)
+
+
+class QuantumKernelMapper(nn.Module):
+    """Fixed (non-trainable) qkernel feature mapper."""
+
+    def __init__(self, latent_dim: int, num_qubits: int = 8, seed: int = 42):
+        super().__init__()
+        rng = np.random.default_rng(seed)
+        proj_weight = rng.standard_normal((num_qubits, latent_dim)).astype(np.float32) / np.sqrt(latent_dim)
+        proj_bias = np.zeros((num_qubits,), dtype=np.float32)
+
+        self.num_qubits = num_qubits
+        self.num_layers = 0
+        self.register_buffer("proj_weight", torch.tensor(proj_weight))
+        self.register_buffer("proj_bias", torch.tensor(proj_bias))
+        self.register_buffer("fixed_weights", torch.zeros((0, num_qubits, 2)))
+
+    def forward(self, z: torch.Tensor, anchors: torch.Tensor) -> torch.Tensor:
+        """Return kernel features of shape (N, A) for z against anchors."""
+        z_flat = z.reshape(-1, z.shape[-1])
+        anchors_flat = anchors.reshape(-1, anchors.shape[-1])
+
+        z_np = np.asarray(z_flat.detach().cpu())
+        anchors_np = np.asarray(anchors_flat.detach().cpu())
+        proj_w_np = np.asarray(self.proj_weight.detach().cpu())
+        proj_b_np = np.asarray(self.proj_bias.detach().cpu())
+        fixed_weights_np = np.asarray(self.fixed_weights.detach().cpu())
+
+        z_j = jnp.array(z_np)
+        proj_w_j = jnp.array(proj_w_np)
+        proj_b_j = jnp.array(proj_b_np)
+        fixed_weights_j = jnp.array(fixed_weights_np)
+
+        fidelity_list = []
+        for anchor in anchors_np:
+            anchor_batch = jnp.broadcast_to(anchor, z_j.shape)
+            fidelities = _fidelity_per_sample(
+                z_j,
+                anchor_batch,
+                proj_w_j,
+                proj_b_j,
+                fixed_weights_j,
+                self.num_qubits,
+                self.num_layers,
+            )
+            fidelity_list.append(fidelities)
+
+        kernel_features = jnp.stack(fidelity_list, axis=1)
+        return torch.tensor(np.asarray(kernel_features), device=z.device, dtype=z.dtype)
+
+
 class _QuantumCommitmentFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, z_e, z_q, proj_w, proj_b, weights, weight, num_qubits: int, num_layers: int):
@@ -156,3 +227,25 @@ class QuantumCommitmentLoss(nn.Module):
             self.num_qubits,
             self.num_layers,
         )
+
+    def fidelity(self, z_e: torch.Tensor, z_q: torch.Tensor) -> torch.Tensor:
+        """Compute per-sample fidelity scores without gradients."""
+        z_e_flat = z_e.reshape(-1, z_e.shape[-1])
+        z_q_flat = z_q.reshape(-1, z_q.shape[-1])
+
+        z_e_np = np.asarray(z_e_flat.detach().cpu())
+        z_q_np = np.asarray(z_q_flat.detach().cpu())
+        proj_w_np = np.asarray(self.proj_weight.detach().cpu())
+        proj_b_np = np.asarray(self.proj_bias.detach().cpu())
+        weights_np = np.asarray(self.vqc_weights.detach().cpu())
+
+        fidelities = _fidelity_per_sample(
+            jnp.array(z_e_np),
+            jnp.array(z_q_np),
+            jnp.array(proj_w_np),
+            jnp.array(proj_b_np),
+            jnp.array(weights_np),
+            self.num_qubits,
+            self.num_layers,
+        )
+        return torch.tensor(np.asarray(fidelities), device=z_e.device, dtype=z_e.dtype)
