@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from sklearn.cluster import KMeans
 
 from .config import Config
 from .data import create_dataloaders
@@ -107,6 +108,53 @@ def update_quantum_weight(model: nn.Module, weight: float) -> None:
         commitment = model.quant.commitment_loss_fn
         if commitment is not None and hasattr(commitment, 'set_weight'):
             commitment.set_weight(weight)
+
+
+def update_qkernel_anchors(
+    model: nn.Module,
+    loader,
+    device: torch.device,
+    max_samples: int,
+    random_state: int = 0,
+) -> None:
+    """Refresh qkernel anchors from encoder outputs via KMeans."""
+    if not getattr(model, "use_qkernel", False):
+        return
+
+    model.eval()
+    latents = []
+    total = 0
+    with torch.no_grad():
+        for x, _, _ in loader:
+            x = x.to(device)
+            z_e = model.encoder(x)
+            z_flat = z_e.reshape(-1, z_e.shape[-1]).cpu()
+            latents.append(z_flat)
+            total += z_flat.shape[0]
+            if total >= max_samples:
+                break
+
+    if not latents:
+        return
+
+    latent_matrix = torch.cat(latents, dim=0)
+    if latent_matrix.shape[0] > max_samples:
+        latent_matrix = latent_matrix[:max_samples]
+
+    kmeans = KMeans(
+        n_clusters=model.qkernel_anchors,
+        n_init=10,
+        random_state=random_state,
+    )
+    kmeans.fit(latent_matrix.numpy())
+    centers = torch.tensor(
+        kmeans.cluster_centers_,
+        device=device,
+        dtype=latent_matrix.dtype,
+    )
+    model.qkernel_anchor_bank.copy_(centers)
+    model.qkernel_initialized = True
+    model.train()
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +288,14 @@ def train_model(
         d_model=config.D_MODEL,
         heads=config.N_HEADS,
         layers=config.N_LAYERS,
-        commitment_loss_fn=commitment_loss_fn
+        commitment_loss_fn=commitment_loss_fn,
+        use_quantum_ema=config.USE_QUANTUM_EMA,
+        quantum_ema_topk=config.QUANTUM_EMA_TOPK,
+        quantum_ema_tau=config.QUANTUM_EMA_TAU,
+        use_qkernel=config.USE_QKERNEL,
+        qkernel_num_qubits=config.QKERNEL_NUM_QUBITS,
+        qkernel_num_layers=config.QKERNEL_NUM_LAYERS,
+        qkernel_anchors=config.QKERNEL_ANCHORS,
     ).to(device)
 
     print("Reinit codebook weights (important)")
@@ -288,12 +343,38 @@ def train_model(
     print(f"VQ weight base: {config.VQ_WEIGHT_BASE}")
     if config.USE_QUANTUM_COMMITMENT:
         print(f"Quantum commitment: enabled (warmup {config.QUANTUM_WARMUP_EPOCHS} epochs)")
+    if config.USE_QUANTUM_EMA:
+        print(
+            "Quantum EMA: enabled "
+            f"(topk={config.QUANTUM_EMA_TOPK}, tau={config.QUANTUM_EMA_TAU})"
+        )
+    if config.USE_QKERNEL:
+        print(
+            "QKernel: enabled "
+            f"(anchors={config.QKERNEL_ANCHORS}, layers={config.QKERNEL_NUM_LAYERS}, "
+            f"refresh={config.QKERNEL_REFRESH_EVERY} epochs)"
+        )
     print("=" * 70)
 
     if config.USE_QUANTUM_COMMITMENT and config.QUANTUM_WARMUP_EPOCHS > 0:
         configure_quantum_warmup(model, enable=True)
 
+    if config.USE_QKERNEL:
+        update_qkernel_anchors(
+            model,
+            train_loader,
+            device,
+            config.QKERNEL_MAX_SAMPLES,
+        )
+
     for epoch in range(1, epochs + 1):
+        if config.USE_QKERNEL and epoch % config.QKERNEL_REFRESH_EVERY == 0:
+            update_qkernel_anchors(
+                model,
+                train_loader,
+                device,
+                config.QKERNEL_MAX_SAMPLES,
+            )
         if config.USE_QUANTUM_COMMITMENT and config.QUANTUM_WARMUP_EPOCHS > 0:
             if epoch == config.QUANTUM_WARMUP_EPOCHS + 1:
                 configure_quantum_warmup(model, enable=False)
