@@ -7,6 +7,160 @@ training pipeline with a PennyLane + JAX implementation, configuration toggles,
 warm-up scheduling, and evaluation that tolerates optional quantum parameters.
 The next phase focuses on experimentation, tuning, and stability analysis.
 
+## Phase 2 Draft: Quantum-EMA Codebook Update (Top-4 Soft Update)
+
+Goal: keep **classical L2 token selection** for stability, but update the codebook
+using **quantum similarity-weighted EMA** so the representation learning is biased
+toward quantum space.
+
+### Draft Update Flow (per batch)
+
+1. **Classical top-K selection (K=4)**
+   - For each `z_e`, compute L2 distance to all codebook entries.
+   - Keep the top-4 nearest tokens (indices).
+2. **Quantum similarity for top-4 only**
+   - For each `(z_e, E_k)` pair in top-4, compute fidelity via the existing VQC.
+   - This reuses the current VQC circuit (same as commitment loss), but treats
+     fidelity as a **soft similarity score**.
+3. **Soft weights from similarity**
+   - Convert the 4 fidelity scores into weights using softmax with temperature `τ`:
+     `w_k = softmax(fidelity / τ)`.
+4. **Quantum-weighted EMA update**
+   - Replace one-hot EMA updates with weighted updates:
+     - `ema_count[k] = decay * ema_count[k] + (1 - decay) * Σ_batch w_k`
+     - `ema_weight[k] = decay * ema_weight[k] + (1 - decay) * Σ_batch (w_k * z_e)`
+   - Update codebook vectors as usual:
+     `E_k = ema_weight[k] / (ema_count[k] + eps)`
+
+### Expected Cost
+
+- Each fidelity uses 2 VQC forwards (one for `z_e`, one for `E_k`).
+- Per batch cost ≈ `B * 4 * 2` VQC forward calls.
+
+### Notes / Open Items
+
+- Keep the quantum commitment loss optional; this phase only targets codebook updates.
+- The temperature `τ` controls how “soft” the top-4 update is.
+- We can add a hybrid fallback (one-hot + quantum weights) if stability is an issue.
+
+## Phase 3 Draft: QKernel Feature Mapping Before VQ
+
+Goal: insert a fixed (non-trainable) qkernel feature mapping between the encoder
+output `z_e` and the VQ module to improve representation quality before
+quantization. Codebook updates remain unchanged in this phase.
+
+### Draft Update Flow (per batch)
+
+1. **Encoder output**: produce `z_e` with shape `(B, T, LATENT_DIM=32)`.
+2. **QKernel mapping**:
+   - Use **A = 32** anchors derived from K-Means on `z_e`.
+   - Compute kernel features `k(z_e, anchor_i)` for each anchor.
+   - Output shape becomes `(B, T, 32)` (no compression).
+3. **Direct feed into VQ**:
+   - No linear projection; `(B, T, 32)` is passed directly to VQ.
+4. **Anchor refresh cadence**:
+   - Recompute K-Means anchors **every 5 epochs**.
+
+### Implementation Decisions (Confirmed)
+
+- QKernel is **non-trainable** (fixed feature map) with **CNOT entanglement enabled**.
+- `A = 32` anchors; `K = A` in K-Means.
+- Anchors are updated every 5 epochs (not every epoch) to control cost.
+
+## Phase 4 Draft: Trainable Quantum Encoder Bottleneck
+
+Goal: replace qkernel with a **trainable VQC bottleneck** before VQ, while
+keeping the VQ and loss **classical** to focus compute on the quantum encoder.
+
+### Draft Update Flow (per batch)
+
+1. **Encoder output**: produce `z_e` with shape `(B, T, 32)`.
+2. **Quantum bottleneck (trainable)**:
+   - Linear map `32 → 8` angles.
+   - VQC with `RY + ring CNOT` layers.
+   - Measure 8 qubits (Pauli-Z expectations) → `(B, T, 8)`.
+3. **Linear expansion**:
+   - Project `(B, T, 8)` back to `(B, T, 32)` before VQ.
+4. **Classical VQ + loss**:
+   - Use standard VQ EMA update and classical commitment loss.
+
+### Implementation Decisions (Confirmed)
+
+- Use `QENCODER_NUM_QUBITS = 8`, `QENCODER_NUM_LAYERS = 1`.
+- Disable quantum commitment loss and quantum EMA during this phase.
+
+## Phase 5 Draft: Anomaly Window Clustering (HDBSCAN)
+
+Goal: after evaluation, cluster **anomalous windows** using similarity in
+`(E_norm, D_norm, A_norm)` space to discover anomaly groups without defining
+explicit pothole categories.
+
+### Draft Update Flow
+
+1. **Evaluate** to compute `E_norm`, `D_norm`, `A_norm`, and composite score `S`.
+2. **Select anomalies** on the **test set** via the existing percentile threshold on `S`.
+3. **Cluster anomalies** with HDBSCAN using 3D features:
+   - feature vector per anomaly window: `[E_norm, D_norm, A_norm]`.
+
+### Required Outputs (All)
+
+**Cluster summary (per cluster)**
+- `cluster_id`
+- `size` and `proportion`
+- `mean_E_norm`, `mean_D_norm`, `mean_A_norm`
+- `representative_indices` (closest samples to cluster center)
+- `stability` (HDBSCAN cluster stability score)
+
+**Cluster members (per window)**
+- `window_index` (to map back to time/location)
+- `cluster_id` (or `-1` for noise)
+- `E_norm`, `D_norm`, `A_norm`
+- `membership_probability`
+- `is_noise`
+
+**Global metrics**
+- `silhouette_score` (on clustered points)
+- `noise_ratio`
+- HDBSCAN parameters (`min_cluster_size`, `min_samples`)
+
+### Notes
+
+- Store outputs to JSON/CSV **and** print key metrics to stdout.
+- Use PCA/UMAP plots optionally for qualitative checks (not required).
+
+### Implementation Decisions (Confirmed)
+
+- Use **HDBSCAN** with `min_cluster_size >= 2`; tune `min_samples` by sensitivity.
+- Features are **only** `[E_norm, D_norm, A_norm]`.
+- Cluster only **test-set anomalies** after thresholding.
+- Output files:
+  - `cluster_summary.(json|csv)`
+  - `cluster_members.(json|csv)`
+- Print summary metrics with a separator between Phase 3 and Phase 5 outputs.
+
+### Hypothesis: Why Quantum-EMA Could Outperform Classic EMA
+
+- **Richer assignment signal:** EMA uses hard one-hot assignments, while quantum
+  similarity provides a graded signal that can update multiple nearby tokens,
+  potentially improving codebook coverage and representation smoothness.
+- **Alignment with VQC embedding:** If the VQC captures useful similarity structure,
+  codebook updates that follow quantum similarity may better match downstream
+  anomaly scoring.
+- **Controlled softness:** The temperature `τ` allows interpolation between
+  hard (EMA-like) and soft updates without changing token selection logic.
+
+### Evidence Plan (to validate superiority vs EMA)
+
+1. **Ablation vs classic EMA**
+   - Compare baseline EMA vs quantum-EMA (Top-4) with identical training budgets.
+2. **Core metrics**
+   - Reconstruction loss trajectory.
+   - Active token count + perplexity (codebook health).
+   - Test-set anomaly metrics (Precision/Recall/F1).
+3. **Stability checks**
+   - Monitor quantum similarity distribution (mean/min/max) to detect collapse.
+   - Track whether top-4 weights become too peaky (τ too low) or too flat (τ too high).
+
 This document captures the current agreed direction for integrating a trainable VQC into the VQ-VAE pipeline, based on the latest discussion. The goal is to use a quantum circuit to produce a similarity/distance score that replaces the classical commitment distance between encoder output and codebook selection.
 
 ## Objective
