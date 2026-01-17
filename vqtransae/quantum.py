@@ -82,6 +82,122 @@ def _fidelity_per_sample(
     return jax.vmap(single_fidelity)(angles_e, angles_q)
 
 
+@lru_cache(maxsize=None)
+def _build_expectation_circuit(num_qubits: int, num_layers: int):
+    dev = qml.device("default.qubit", wires=num_qubits)
+
+    def circuit(angles, weights):
+        for i in range(num_qubits):
+            qml.RY(angles[i], wires=i)
+        for layer in range(num_layers):
+            for i in range(num_qubits):
+                qml.RY(weights[layer, i, 0], wires=i)
+                qml.RZ(weights[layer, i, 1], wires=i)
+            for i in range(num_qubits):
+                qml.CNOT(wires=[i, (i + 1) % num_qubits])
+        expectations = [qml.expval(qml.PauliZ(i)) for i in range(num_qubits)]
+        return tuple(expectations)
+
+    return qml.QNode(circuit, dev, interface="jax", diff_method="best")
+
+
+def _expectation_batch(
+    z: jnp.ndarray,
+    proj_w: jnp.ndarray,
+    proj_b: jnp.ndarray,
+    weights: jnp.ndarray,
+    num_qubits: int,
+    num_layers: int,
+) -> jnp.ndarray:
+    qnode = _build_expectation_circuit(num_qubits, num_layers)
+    angles = jnp.dot(z, proj_w.T) + proj_b
+
+    def single_expectation(angle):
+        return qnode(angle, weights)
+
+    exp_vals = jax.vmap(single_expectation)(angles)
+    return jnp.stack(exp_vals, axis=1)
+
+
+class _QuantumEncoderFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, z, proj_w, proj_b, weights, num_qubits: int, num_layers: int):
+        z_np = np.asarray(z.detach().cpu())
+        proj_w_np = np.asarray(proj_w.detach().cpu())
+        proj_b_np = np.asarray(proj_b.detach().cpu())
+        weights_np = np.asarray(weights.detach().cpu())
+
+        z_j = jnp.array(z_np)
+        proj_w_j = jnp.array(proj_w_np)
+        proj_b_j = jnp.array(proj_b_np)
+        weights_j = jnp.array(weights_np)
+
+        def forward_fn(z_in, proj_w_in, proj_b_in, weights_in):
+            return _expectation_batch(
+                z_in,
+                proj_w_in,
+                proj_b_in,
+                weights_in,
+                num_qubits,
+                num_layers,
+            )
+
+        output, vjp_fn = jax.vjp(forward_fn, z_j, proj_w_j, proj_b_j, weights_j)
+        ctx.vjp_fn = vjp_fn
+        ctx.device = z.device
+
+        output_tensor = torch.tensor(np.asarray(output), dtype=z.dtype, device=z.device)
+        if output_tensor.ndim == 2 and output_tensor.shape[1] != num_qubits:
+            output_tensor = output_tensor.transpose(0, 1)
+        return output_tensor
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_output_np = np.asarray(grad_output.detach().cpu())
+        dz, dproj_w, dproj_b, dweights = ctx.vjp_fn(jnp.array(grad_output_np))
+
+        def to_torch(array):
+            return torch.tensor(np.asarray(array), device=ctx.device)
+
+        return (
+            to_torch(dz),
+            to_torch(dproj_w),
+            to_torch(dproj_b),
+            to_torch(dweights),
+            None,
+            None,
+        )
+
+
+class QuantumEncoderBottleneck(nn.Module):
+    """Trainable VQC bottleneck that maps latent vectors through qubits."""
+
+    def __init__(self, latent_dim: int, num_qubits: int = 8, num_layers: int = 1):
+        super().__init__()
+        self.num_qubits = num_qubits
+        self.num_layers = num_layers
+        self.proj_weight = nn.Parameter(torch.empty(num_qubits, latent_dim))
+        self.proj_bias = nn.Parameter(torch.zeros(num_qubits))
+        self.vqc_weights = nn.Parameter(torch.empty(num_layers, num_qubits, 2))
+        self.output_proj = nn.Linear(num_qubits, latent_dim)
+        nn.init.xavier_uniform_(self.proj_weight)
+        nn.init.zeros_(self.proj_bias)
+        nn.init.xavier_uniform_(self.vqc_weights)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        z_flat = z.reshape(-1, z.shape[-1])
+        q_out = _QuantumEncoderFunction.apply(
+            z_flat,
+            self.proj_weight,
+            self.proj_bias,
+            self.vqc_weights,
+            self.num_qubits,
+            self.num_layers,
+        )
+        q_out = self.output_proj(q_out)
+        return q_out.view(z.shape[0], z.shape[1], -1)
+
+
 class QuantumKernelMapper(nn.Module):
     """Fixed (non-trainable) qkernel feature mapper."""
 

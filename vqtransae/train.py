@@ -279,6 +279,9 @@ def train_model(
             weight=config.QUANTUM_WEIGHT
         )
 
+    if config.USE_QUANTUM_ENCODER and (config.USE_QUANTUM_COMMITMENT or config.USE_QUANTUM_EMA):
+        raise ValueError("Quantum encoder bottleneck requires classical VQ and loss settings.")
+
     model = VQTransAE(
         win_size=config.WIN_SIZE,
         in_dim=config.IN_DIM,
@@ -296,6 +299,9 @@ def train_model(
         qkernel_num_qubits=config.QKERNEL_NUM_QUBITS,
         qkernel_num_layers=config.QKERNEL_NUM_LAYERS,
         qkernel_anchors=config.QKERNEL_ANCHORS,
+        use_quantum_encoder=config.USE_QUANTUM_ENCODER,
+        qencoder_num_qubits=config.QENCODER_NUM_QUBITS,
+        qencoder_num_layers=config.QENCODER_NUM_LAYERS,
     ).to(device)
 
     print("Reinit codebook weights (important)")
@@ -312,6 +318,8 @@ def train_model(
     quantum_params = []
     if config.USE_QUANTUM_COMMITMENT and model.quant.commitment_loss_fn is not None:
         quantum_params = list(model.quant.commitment_loss_fn.parameters())
+    if config.USE_QUANTUM_ENCODER:
+        quantum_params += list(model.quantum_encoder.parameters())
 
     quantum_param_ids = {id(param) for param in quantum_params}
     quant_params = [param for param in model.quant.parameters() if id(param) not in quantum_param_ids]
@@ -353,6 +361,11 @@ def train_model(
             "QKernel: enabled "
             f"(anchors={config.QKERNEL_ANCHORS}, layers={config.QKERNEL_NUM_LAYERS}, "
             f"refresh={config.QKERNEL_REFRESH_EVERY} epochs)"
+        )
+    if config.USE_QUANTUM_ENCODER:
+        print(
+            "Quantum encoder: enabled "
+            f"(qubits={config.QENCODER_NUM_QUBITS}, layers={config.QENCODER_NUM_LAYERS})"
         )
     print("=" * 70)
 

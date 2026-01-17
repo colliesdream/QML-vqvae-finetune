@@ -250,10 +250,16 @@ class VQTransAE(nn.Module):
                  use_qkernel: bool = False,
                  qkernel_num_qubits: int = 8,
                  qkernel_num_layers: int = 1,
-                 qkernel_anchors: int = 16):
+                 qkernel_anchors: int = 16,
+                 use_quantum_encoder: bool = False,
+                 qencoder_num_qubits: int = 8,
+                 qencoder_num_layers: int = 1):
         super().__init__()
 
         self.encoder = SeqEncoder(in_dim, hidden, latent, n_layers=2, bidirectional=True, dropout=dropout)
+        self.use_quantum_encoder = use_quantum_encoder
+        if self.use_quantum_encoder and use_qkernel:
+            raise ValueError("Choose either qkernel or quantum encoder bottleneck, not both.")
         self.use_qkernel = use_qkernel
         self.qkernel_anchors = qkernel_anchors
         if self.use_qkernel:
@@ -266,6 +272,13 @@ class VQTransAE(nn.Module):
                 raise ValueError("QKernel anchors must match latent dim when projection is disabled.")
             self.register_buffer("qkernel_anchor_bank", torch.zeros(qkernel_anchors, latent))
             self.qkernel_initialized = False
+        if self.use_quantum_encoder:
+            from .quantum import QuantumEncoderBottleneck
+            self.quantum_encoder = QuantumEncoderBottleneck(
+                latent_dim=latent,
+                num_qubits=qencoder_num_qubits,
+                num_layers=qencoder_num_layers,
+            )
         self.quant = VectorQuantizerEMA(
             codebook,
             latent,
@@ -296,6 +309,8 @@ class VQTransAE(nn.Module):
 
     def forward(self, x):
         z_e = self.encoder(x)
+        if self.use_quantum_encoder:
+            z_e = self.quantum_encoder(z_e)
         if self.use_qkernel:
             if not self.qkernel_initialized:
                 raise RuntimeError("QKernel anchors are not initialized.")

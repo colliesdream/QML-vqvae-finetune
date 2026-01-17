@@ -63,6 +63,11 @@ class Config:
     QKERNEL_REFRESH_EVERY = 5       # Refresh anchors every N epochs
     QKERNEL_MAX_SAMPLES = 5000      # Max samples for KMeans anchor fitting
 
+    # Quantum encoder bottleneck (trainable VQC before VQ)
+    USE_QUANTUM_ENCODER = False     # Enable trainable VQC encoder bottleneck
+    QENCODER_NUM_QUBITS = 8         # Number of qubits for VQC encoder
+    QENCODER_NUM_LAYERS = 1         # Number of VQC layers
+
     # Codebook refresh
     REFRESH_EVERY = 5          # Refresh every N epochs
     MIN_USAGE_THRESHOLD = 10   # Minimum usage count

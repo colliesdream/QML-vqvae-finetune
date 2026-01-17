@@ -67,6 +67,28 @@ quantization. Codebook updates remain unchanged in this phase.
 - `A = 32` anchors; `K = A` in K-Means.
 - Anchors are updated every 5 epochs (not every epoch) to control cost.
 
+## Phase 4 Draft: Trainable Quantum Encoder Bottleneck
+
+Goal: replace qkernel with a **trainable VQC bottleneck** before VQ, while
+keeping the VQ and loss **classical** to focus compute on the quantum encoder.
+
+### Draft Update Flow (per batch)
+
+1. **Encoder output**: produce `z_e` with shape `(B, T, 32)`.
+2. **Quantum bottleneck (trainable)**:
+   - Linear map `32 → 8` angles.
+   - VQC with `RY + ring CNOT` layers.
+   - Measure 8 qubits (Pauli-Z expectations) → `(B, T, 8)`.
+3. **Linear expansion**:
+   - Project `(B, T, 8)` back to `(B, T, 32)` before VQ.
+4. **Classical VQ + loss**:
+   - Use standard VQ EMA update and classical commitment loss.
+
+### Implementation Decisions (Confirmed)
+
+- Use `QENCODER_NUM_QUBITS = 8`, `QENCODER_NUM_LAYERS = 1`.
+- Disable quantum commitment loss and quantum EMA during this phase.
+
 ### Hypothesis: Why Quantum-EMA Could Outperform Classic EMA
 
 - **Richer assignment signal:** EMA uses hard one-hot assignments, while quantum
