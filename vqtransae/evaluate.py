@@ -261,6 +261,7 @@ def evaluate_model(
                 'mean_D_norm': float(member_feats[:, 1].mean()),
                 'mean_A_norm': float(member_feats[:, 2].mean()),
                 'representative_indices': representative_indices,
+                'member_indices': [int(idx) for idx in member_indices],
                 'stability': float(clusterer.cluster_persistence_[label]),
             })
 
@@ -269,10 +270,13 @@ def evaluate_model(
         save_json(cluster_summary, summary_path)
         save_json(cluster_members, members_path)
 
-        import pandas as pd
+        cluster_summary_sorted = sorted(cluster_summary, key=lambda item: item['size'], reverse=True)
+        size_sorted_path = output_path / 'cluster_summary_by_size.json'
+        save_json(cluster_summary_sorted, size_sorted_path)
 
-        pd.DataFrame(cluster_summary).to_csv(output_path / 'cluster_summary.csv', index=False)
-        pd.DataFrame(cluster_members).to_csv(output_path / 'cluster_members.csv', index=False)
+        stability_sorted = sorted(cluster_summary, key=lambda item: item['stability'], reverse=True)
+        stability_sorted_path = output_path / 'cluster_summary_by_stability.json'
+        save_json(stability_sorted, stability_sorted_path)
 
         print("\n" + "=" * 70)
         print("Phase 5: HDBSCAN clustering (test anomalies)")
