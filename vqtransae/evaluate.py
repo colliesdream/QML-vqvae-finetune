@@ -278,6 +278,7 @@ def evaluate_model(
         print("Phase 5: HDBSCAN clustering (test anomalies)")
         print("=" * 70)
         print(f"Anomalies clustered: {anomaly_indices.size}")
+        print(f"Clusters found: {len(cluster_summary)}")
         print(f"Noise ratio: {noise_ratio:.4f}")
         if silhouette is not None:
             print(f"Silhouette score: {silhouette:.4f}")
