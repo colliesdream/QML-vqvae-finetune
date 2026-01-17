@@ -80,3 +80,7 @@ class Config:
 
     # Threshold percentile on validation scores
     THRESHOLD_PERCENTILE = 20
+
+    # Phase 5 clustering (HDBSCAN)
+    HDBSCAN_MIN_CLUSTER_SIZE = 2
+    HDBSCAN_MIN_SAMPLES = 2

@@ -89,6 +89,55 @@ keeping the VQ and loss **classical** to focus compute on the quantum encoder.
 - Use `QENCODER_NUM_QUBITS = 8`, `QENCODER_NUM_LAYERS = 1`.
 - Disable quantum commitment loss and quantum EMA during this phase.
 
+## Phase 5 Draft: Anomaly Window Clustering (HDBSCAN)
+
+Goal: after evaluation, cluster **anomalous windows** using similarity in
+`(E_norm, D_norm, A_norm)` space to discover anomaly groups without defining
+explicit pothole categories.
+
+### Draft Update Flow
+
+1. **Evaluate** to compute `E_norm`, `D_norm`, `A_norm`, and composite score `S`.
+2. **Select anomalies** on the **test set** via the existing percentile threshold on `S`.
+3. **Cluster anomalies** with HDBSCAN using 3D features:
+   - feature vector per anomaly window: `[E_norm, D_norm, A_norm]`.
+
+### Required Outputs (All)
+
+**Cluster summary (per cluster)**
+- `cluster_id`
+- `size` and `proportion`
+- `mean_E_norm`, `mean_D_norm`, `mean_A_norm`
+- `representative_indices` (closest samples to cluster center)
+- `stability` (HDBSCAN cluster stability score)
+
+**Cluster members (per window)**
+- `window_index` (to map back to time/location)
+- `cluster_id` (or `-1` for noise)
+- `E_norm`, `D_norm`, `A_norm`
+- `membership_probability`
+- `is_noise`
+
+**Global metrics**
+- `silhouette_score` (on clustered points)
+- `noise_ratio`
+- HDBSCAN parameters (`min_cluster_size`, `min_samples`)
+
+### Notes
+
+- Store outputs to JSON/CSV **and** print key metrics to stdout.
+- Use PCA/UMAP plots optionally for qualitative checks (not required).
+
+### Implementation Decisions (Confirmed)
+
+- Use **HDBSCAN** with `min_cluster_size >= 2`; tune `min_samples` by sensitivity.
+- Features are **only** `[E_norm, D_norm, A_norm]`.
+- Cluster only **test-set anomalies** after thresholding.
+- Output files:
+  - `cluster_summary.(json|csv)`
+  - `cluster_members.(json|csv)`
+- Print summary metrics with a separator between Phase 3 and Phase 5 outputs.
+
 ### Hypothesis: Why Quantum-EMA Could Outperform Classic EMA
 
 - **Richer assignment signal:** EMA uses hard one-hot assignments, while quantum

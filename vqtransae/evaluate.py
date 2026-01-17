@@ -9,7 +9,12 @@ from typing import Dict
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, silhouette_score
+
+try:
+    import hdbscan
+except ImportError:  # pragma: no cover - optional dependency
+    hdbscan = None
 
 from .config import Config
 from .data import create_dataloaders
@@ -199,6 +204,90 @@ def evaluate_model(
     print(f"\nThreshold: {threshold:.4f} ({percentile}th percentile of val)")
 
     metrics = evaluate_with_threshold(test_composite, test_labels, threshold)
+
+    # -----------------------------------------------------------------------
+    # Phase 5 clustering: anomaly windows only (HDBSCAN)
+    # -----------------------------------------------------------------------
+    anomaly_mask = test_composite > threshold
+    anomaly_indices = np.where(anomaly_mask)[0]
+    anomaly_features = np.stack([E_norm, D_norm, A_norm], axis=1)[anomaly_mask]
+
+    cluster_summary = []
+    cluster_members = []
+    silhouette = None
+    noise_ratio = None
+
+    if anomaly_indices.size > 0 and hdbscan is not None:
+        min_cluster_size = max(2, Config.HDBSCAN_MIN_CLUSTER_SIZE)
+        min_samples = max(1, Config.HDBSCAN_MIN_SAMPLES)
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+        )
+        labels = clusterer.fit_predict(anomaly_features)
+        probs = clusterer.probabilities_
+
+        noise_ratio = float((labels == -1).mean())
+        clustered_mask = labels != -1
+        if clustered_mask.sum() > 1 and len(np.unique(labels[clustered_mask])) > 1:
+            silhouette = float(silhouette_score(anomaly_features[clustered_mask], labels[clustered_mask]))
+
+        for idx, label, prob, feats in zip(anomaly_indices, labels, probs, anomaly_features):
+            cluster_members.append({
+                'window_index': int(idx),
+                'cluster_id': int(label),
+                'E_norm': float(feats[0]),
+                'D_norm': float(feats[1]),
+                'A_norm': float(feats[2]),
+                'membership_probability': float(prob),
+                'is_noise': bool(label == -1),
+            })
+
+        unique_labels = sorted(set(labels) - {-1})
+        for label in unique_labels:
+            member_mask = labels == label
+            member_indices = anomaly_indices[member_mask]
+            member_feats = anomaly_features[member_mask]
+            center = member_feats.mean(axis=0, keepdims=True)
+            distances = np.linalg.norm(member_feats - center, axis=1)
+            rep_order = np.argsort(distances)
+            representative_indices = [int(member_indices[i]) for i in rep_order[:5]]
+
+            cluster_summary.append({
+                'cluster_id': int(label),
+                'size': int(member_mask.sum()),
+                'proportion': float(member_mask.mean()),
+                'mean_E_norm': float(member_feats[:, 0].mean()),
+                'mean_D_norm': float(member_feats[:, 1].mean()),
+                'mean_A_norm': float(member_feats[:, 2].mean()),
+                'representative_indices': representative_indices,
+                'stability': float(clusterer.cluster_persistence_[label]),
+            })
+
+        summary_path = output_path / 'cluster_summary.json'
+        members_path = output_path / 'cluster_members.json'
+        save_json(cluster_summary, summary_path)
+        save_json(cluster_members, members_path)
+
+        import pandas as pd
+
+        pd.DataFrame(cluster_summary).to_csv(output_path / 'cluster_summary.csv', index=False)
+        pd.DataFrame(cluster_members).to_csv(output_path / 'cluster_members.csv', index=False)
+
+        print("\n" + "=" * 70)
+        print("Phase 5: HDBSCAN clustering (test anomalies)")
+        print("=" * 70)
+        print(f"Anomalies clustered: {anomaly_indices.size}")
+        print(f"Clusters found: {len(cluster_summary)}")
+        print(f"Noise ratio: {noise_ratio:.4f}")
+        if silhouette is not None:
+            print(f"Silhouette score: {silhouette:.4f}")
+        print(f"HDBSCAN min_cluster_size: {min_cluster_size}")
+        print(f"HDBSCAN min_samples: {min_samples}")
+    elif anomaly_indices.size == 0:
+        print("\nNo anomalies above threshold; skipping clustering.")
+    else:
+        print("\nHDBSCAN is not installed; skipping clustering.")
 
     print("\n" + "=" * 70)
     print("Eval metrics")
