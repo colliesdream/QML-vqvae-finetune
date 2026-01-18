@@ -72,6 +72,14 @@ def js_distance_matrix(histograms: np.ndarray) -> np.ndarray:
     return distance
 
 
+def compute_s_norm(members: pd.DataFrame, eps: float = 1e-6) -> np.ndarray:
+    """Compute z-scored composite S from E/D/A normalized features."""
+    s_values = members[["E_norm", "D_norm", "A_norm"]].sum(axis=1).to_numpy()
+    mean = float(np.mean(s_values))
+    std = float(np.std(s_values))
+    return (s_values - mean) / max(std, eps)
+
+
 def build_cluster_summary(
     members: pd.DataFrame,
     labels: np.ndarray,
@@ -256,6 +264,46 @@ def plot_vq_hist_embeddings(
         plt.close(fig)
 
 
+def plot_single_feature(
+    members: pd.DataFrame,
+    labels: np.ndarray,
+    output_dir: Path,
+    feature: str,
+    prefix: str = "",
+) -> None:
+    """Visualize clustering for a single feature."""
+    if feature == "S_norm":
+        values = compute_s_norm(members)
+    else:
+        values = members[feature].to_numpy()
+    rng = np.random.default_rng(42)
+    jitter = rng.normal(0.0, 0.02, size=values.shape[0])
+
+    fig = plt.figure(figsize=(7, 4))
+    scatter = plt.scatter(
+        values,
+        jitter,
+        c=labels,
+        s=10,
+        cmap="tab20",
+    )
+    plt.xlabel(feature)
+    plt.yticks([])
+    plt.colorbar(scatter, shrink=0.7, label="Cluster ID")
+    plt.tight_layout()
+    feature_slug = feature.lower()
+    plt.savefig(output_dir / f"{prefix}cluster_{feature_slug}_strip.png", dpi=200)
+    plt.close(fig)
+
+    fig = plt.figure(figsize=(7, 4))
+    plt.hist(values, bins=40, color="slateblue", alpha=0.8)
+    plt.xlabel(feature)
+    plt.ylabel("Count")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{prefix}cluster_{feature_slug}_hist.png", dpi=200)
+    plt.close(fig)
+
+
 def require_columns(members: pd.DataFrame, columns: tuple[str, ...], context: str) -> None:
     """Ensure required columns exist before clustering."""
     missing = [col for col in columns if col not in members.columns]
@@ -284,6 +332,16 @@ def main() -> None:
     parser.add_argument("--min-cluster-size", type=int, default=2)
     parser.add_argument("--min-samples", type=int, default=2)
     parser.add_argument(
+        "--feature-set",
+        choices=("eda", "a", "e", "d", "s"),
+        default="eda",
+        help=(
+            "Feature set for clustering: 'eda' (E/D/A), "
+            "'a' (A_norm only), 'e' (E_norm only), "
+            "'d' (D_norm only), or 's' (S_norm only)."
+        ),
+    )
+    parser.add_argument(
         "--use-vq-hist",
         action="store_true",
         help="Cluster by VQ histogram using JS distance (expects 'indices' column).",
@@ -295,8 +353,31 @@ def main() -> None:
 
     members = load_members(args.members)
     if not args.use_vq_hist:
-        require_columns(members, ("E_norm", "D_norm", "A_norm"), "E/D/A clustering")
-        features = members[["E_norm", "D_norm", "A_norm"]].to_numpy()
+        if args.feature_set == "a":
+            feature_column = "A_norm"
+            feature_label = "A-only clustering"
+            require_columns(members, (feature_column,), feature_label)
+            features = members[[feature_column]].to_numpy()
+        elif args.feature_set == "e":
+            feature_column = "E_norm"
+            feature_label = "E-only clustering"
+            require_columns(members, (feature_column,), feature_label)
+            features = members[[feature_column]].to_numpy()
+        elif args.feature_set == "d":
+            feature_column = "D_norm"
+            feature_label = "D-only clustering"
+            require_columns(members, (feature_column,), feature_label)
+            features = members[[feature_column]].to_numpy()
+        elif args.feature_set == "s":
+            feature_column = "S_norm"
+            feature_label = "S-only clustering"
+            require_columns(members, ("E_norm", "D_norm", "A_norm"), feature_label)
+            features = compute_s_norm(members).reshape(-1, 1)
+        else:
+            feature_column = None
+            feature_label = "E/D/A clustering"
+            require_columns(members, ("E_norm", "D_norm", "A_norm"), feature_label)
+            features = members[["E_norm", "D_norm", "A_norm"]].to_numpy()
 
     min_cluster_size = max(2, args.min_cluster_size)
     min_samples = max(1, args.min_samples)
@@ -318,6 +399,9 @@ def main() -> None:
             min_samples,
             args.output_dir,
         )
+        if feature_column is not None:
+            plot_single_feature(members, labels, args.output_dir, feature_column)
+        print(f"Feature set: {feature_label}")
 
     if args.use_vq_hist:
         if "indices" not in members.columns:
