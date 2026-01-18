@@ -11,3 +11,4 @@ pennylane>=0.36.0
 jax>=0.4.26
 jaxlib>=0.4.26
 hdbscan>=0.8.33
+umap-learn>=0.5.5

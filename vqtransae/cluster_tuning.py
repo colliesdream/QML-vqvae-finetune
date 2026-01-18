@@ -16,12 +16,19 @@ import matplotlib
 import numpy as np
 import pandas as pd
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import normalize
 from sklearn.metrics import silhouette_score
 
 try:
     import hdbscan
 except ImportError:  # pragma: no cover - optional dependency
     hdbscan = None
+
+try:
+    import umap
+except ImportError:  # pragma: no cover - optional dependency
+    umap = None
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -37,6 +44,33 @@ def load_members(path: Path) -> pd.DataFrame:
     raise ValueError("cluster_members file must be .csv or .json")
 
 
+def build_histograms(indices: np.ndarray, codebook_size: int, eps: float = 1e-8) -> np.ndarray:
+    """Build L1-normalized code histograms from VQ indices."""
+    histograms = np.zeros((indices.shape[0], codebook_size), dtype=np.float32)
+    for i, row in enumerate(indices):
+        hist = np.bincount(row, minlength=codebook_size).astype(np.float32)
+        histograms[i] = hist
+    histograms = histograms + eps
+    histograms = histograms / histograms.sum(axis=1, keepdims=True)
+    return histograms
+
+
+def js_distance_matrix(histograms: np.ndarray) -> np.ndarray:
+    """Compute Jensen–Shannon distance matrix for histogram features."""
+    n, _ = histograms.shape
+    distance = np.zeros((n, n), dtype=np.float32)
+    log_h = np.log(histograms)
+    for i in range(n):
+        p = histograms[i]
+        log_p = log_h[i]
+        m = 0.5 * (histograms + p)
+        log_m = np.log(m)
+        kl_p = np.sum(p * (log_p - log_m), axis=1)
+        kl_q = np.sum(histograms * (log_h - log_m), axis=1)
+        distance[i] = np.sqrt(0.5 * (kl_p + kl_q))
+    return distance
+
+
 def build_cluster_summary(
     members: pd.DataFrame,
     labels: np.ndarray,
@@ -45,6 +79,7 @@ def build_cluster_summary(
     min_cluster_size: int,
     min_samples: int,
     output_dir: Path,
+    prefix: str = "",
 ) -> None:
     """Write cluster summaries and members to disk."""
     anomaly_features = members[["E_norm", "D_norm", "A_norm"]].to_numpy()
@@ -91,8 +126,8 @@ def build_cluster_summary(
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = output_dir / "cluster_summary.json"
-    members_path = output_dir / "cluster_members.json"
+    summary_path = output_dir / f"{prefix}cluster_summary.json"
+    members_path = output_dir / f"{prefix}cluster_members.json"
     with summary_path.open("w", encoding="utf-8") as handle:
         json.dump(cluster_summary, handle, ensure_ascii=False, indent=2)
     with members_path.open("w", encoding="utf-8") as handle:
@@ -101,9 +136,9 @@ def build_cluster_summary(
     cluster_summary_sorted = sorted(cluster_summary, key=lambda item: item["size"], reverse=True)
     stability_sorted = sorted(cluster_summary, key=lambda item: item["stability"], reverse=True)
 
-    with (output_dir / "cluster_summary_by_size.json").open("w", encoding="utf-8") as handle:
+    with (output_dir / f"{prefix}cluster_summary_by_size.json").open("w", encoding="utf-8") as handle:
         json.dump(cluster_summary_sorted, handle, ensure_ascii=False, indent=2)
-    with (output_dir / "cluster_summary_by_stability.json").open("w", encoding="utf-8") as handle:
+    with (output_dir / f"{prefix}cluster_summary_by_stability.json").open("w", encoding="utf-8") as handle:
         json.dump(stability_sorted, handle, ensure_ascii=False, indent=2)
 
     noise_ratio = float((labels == -1).mean())
@@ -127,11 +162,46 @@ def build_cluster_summary(
     ax.set_zlabel("A_norm")
     fig.colorbar(scatter, ax=ax, shrink=0.6, pad=0.1)
     fig.tight_layout()
-    fig.savefig(output_dir / "cluster_3d.png", dpi=200)
+    fig.savefig(output_dir / f"{prefix}cluster_3d.png", dpi=200)
     plt.close(fig)
 
+    pca = PCA(n_components=2)
+    pca_coords = pca.fit_transform(anomaly_features)
+    fig = plt.figure(figsize=(7, 5))
+    scatter = plt.scatter(
+        pca_coords[:, 0],
+        pca_coords[:, 1],
+        c=labels,
+        s=8,
+        cmap="tab20",
+    )
+    plt.xlabel("PC1")
+    plt.ylabel("PC2")
+    plt.colorbar(scatter, shrink=0.7)
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{prefix}cluster_pca_2d.png", dpi=200)
+    plt.close(fig)
+
+    if umap is not None:
+        reducer = umap.UMAP(n_components=2, random_state=42)
+        umap_coords = reducer.fit_transform(anomaly_features)
+        fig = plt.figure(figsize=(7, 5))
+        scatter = plt.scatter(
+            umap_coords[:, 0],
+            umap_coords[:, 1],
+            c=labels,
+            s=8,
+            cmap="tab20",
+        )
+        plt.xlabel("UMAP1")
+        plt.ylabel("UMAP2")
+        plt.colorbar(scatter, shrink=0.7)
+        plt.tight_layout()
+        plt.savefig(output_dir / f"{prefix}cluster_umap_2d.png", dpi=200)
+        plt.close(fig)
+
     print("\n" + "=" * 70)
-    print("Phase 5: HDBSCAN clustering (from cluster_members)")
+    print(f"Phase 5: HDBSCAN clustering ({prefix.rstrip('_') or 'from cluster_members'})")
     print("=" * 70)
     print(f"Anomalies clustered: {len(anomaly_indices)}")
     print(f"Clusters found: {len(cluster_summary)}")
@@ -158,6 +228,11 @@ def main() -> None:
     )
     parser.add_argument("--min-cluster-size", type=int, default=2)
     parser.add_argument("--min-samples", type=int, default=2)
+    parser.add_argument(
+        "--use-vq-hist",
+        action="store_true",
+        help="Cluster by VQ histogram using JS distance (expects 'indices' column).",
+    )
     args = parser.parse_args()
 
     if hdbscan is None:
@@ -185,6 +260,36 @@ def main() -> None:
         min_samples,
         args.output_dir,
     )
+
+    if args.use_vq_hist:
+        if "indices" not in members.columns:
+            raise SystemExit("VQ histogram mode requires an 'indices' column in cluster_members.")
+
+        raw_indices = members["indices"].to_list()
+        parsed_indices = np.array([np.asarray(row, dtype=int) for row in raw_indices])
+        codebook_size = int(parsed_indices.max()) + 1
+        histograms = build_histograms(parsed_indices, codebook_size)
+        histograms = normalize(histograms, norm="l1")
+        js_dist = js_distance_matrix(histograms).astype(np.float64)
+
+        hist_clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            metric="precomputed",
+        )
+        hist_labels = hist_clusterer.fit_predict(js_dist)
+        hist_probs = hist_clusterer.probabilities_
+
+        build_cluster_summary(
+            members,
+            hist_labels,
+            hist_probs,
+            hist_clusterer,
+            min_cluster_size,
+            min_samples,
+            args.output_dir,
+            prefix="vq_hist_",
+        )
 
 
 if __name__ == "__main__":

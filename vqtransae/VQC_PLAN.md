@@ -138,6 +138,32 @@ explicit pothole categories.
   - `cluster_members.(json|csv)`
 - Print summary metrics with a separator between Phase 3 and Phase 5 outputs.
 
+## Phase 6 Draft: VQ Code Histogram Clustering (HDBSCAN + JS Distance)
+
+Goal: cluster anomaly windows using **VQ codebook usage histograms** (shape
+signatures) instead of scalar E/D/A scores, to better capture anomaly types.
+
+### Draft Update Flow
+
+1. **Collect anomaly windows** on the test set (same thresholding as Phase 5).
+2. **Build VQ code histograms** per window:
+   - Histogram dimension = `codebook_size` (e.g., 1024).
+   - Use L1 normalization.
+3. **Distance metric**:
+   - Jensen–Shannon distance (with small epsilon smoothing).
+4. **Clustering**:
+   - HDBSCAN on histogram features.
+5. **Representatives**:
+   - Select representative windows by highest membership probability.
+
+### Implementation Decisions (Confirmed)
+
+- Feature: **code histogram only** (no hybrid stats).
+- Histogram dimension: **full codebook size (1024)**.
+- Distance: **Jensen–Shannon**.
+- Clustering: **HDBSCAN**.
+- Representative selection: **highest membership probability**.
+
 ### Hypothesis: Why Quantum-EMA Could Outperform Classic EMA
 
 - **Richer assignment signal:** EMA uses hard one-hot assignments, while quantum
