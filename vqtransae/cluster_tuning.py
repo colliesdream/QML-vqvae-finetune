@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from sklearn.decomposition import PCA
+from sklearn.manifold import MDS
 from sklearn.preprocessing import normalize
 from sklearn.metrics import silhouette_score
 
@@ -212,6 +213,60 @@ def build_cluster_summary(
     print(f"HDBSCAN min_samples: {min_samples}")
 
 
+def plot_vq_hist_embeddings(
+    js_dist: np.ndarray,
+    labels: np.ndarray,
+    output_dir: Path,
+    prefix: str,
+) -> None:
+    """Visualize VQ histogram clustering with JS-distance embeddings."""
+    mds = MDS(n_components=2, dissimilarity="precomputed", random_state=42)
+    mds_coords = mds.fit_transform(js_dist)
+    fig = plt.figure(figsize=(7, 5))
+    scatter = plt.scatter(
+        mds_coords[:, 0],
+        mds_coords[:, 1],
+        c=labels,
+        s=8,
+        cmap="tab20",
+    )
+    plt.xlabel("MDS1")
+    plt.ylabel("MDS2")
+    plt.colorbar(scatter, shrink=0.7)
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{prefix}cluster_js_mds_2d.png", dpi=200)
+    plt.close(fig)
+
+    if umap is not None:
+        reducer = umap.UMAP(metric="precomputed", n_components=2, random_state=42)
+        umap_coords = reducer.fit_transform(js_dist)
+        fig = plt.figure(figsize=(7, 5))
+        scatter = plt.scatter(
+            umap_coords[:, 0],
+            umap_coords[:, 1],
+            c=labels,
+            s=8,
+            cmap="tab20",
+        )
+        plt.xlabel("UMAP1")
+        plt.ylabel("UMAP2")
+        plt.colorbar(scatter, shrink=0.7)
+        plt.tight_layout()
+        plt.savefig(output_dir / f"{prefix}cluster_js_umap_2d.png", dpi=200)
+        plt.close(fig)
+
+
+def require_columns(members: pd.DataFrame, columns: tuple[str, ...], context: str) -> None:
+    """Ensure required columns exist before clustering."""
+    missing = [col for col in columns if col not in members.columns]
+    if missing:
+        missing_list = ", ".join(missing)
+        required_list = ", ".join(columns)
+        raise SystemExit(
+            f"{context} requires columns: {required_list}. Missing: {missing_list}."
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Tune HDBSCAN on anomaly features.")
     parser.add_argument(
@@ -239,31 +294,39 @@ def main() -> None:
         raise SystemExit("hdbscan is required. Install with: pip install \"hdbscan>=0.8.33\"")
 
     members = load_members(args.members)
-    features = members[["E_norm", "D_norm", "A_norm"]].to_numpy()
+    if not args.use_vq_hist:
+        require_columns(members, ("E_norm", "D_norm", "A_norm"), "E/D/A clustering")
+        features = members[["E_norm", "D_norm", "A_norm"]].to_numpy()
 
     min_cluster_size = max(2, args.min_cluster_size)
     min_samples = max(1, args.min_samples)
 
-    clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=min_cluster_size,
-        min_samples=min_samples,
-    )
-    labels = clusterer.fit_predict(features)
-    probs = clusterer.probabilities_
+    if not args.use_vq_hist:
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+        )
+        labels = clusterer.fit_predict(features)
+        probs = clusterer.probabilities_
 
-    build_cluster_summary(
-        members,
-        labels,
-        probs,
-        clusterer,
-        min_cluster_size,
-        min_samples,
-        args.output_dir,
-    )
+        build_cluster_summary(
+            members,
+            labels,
+            probs,
+            clusterer,
+            min_cluster_size,
+            min_samples,
+            args.output_dir,
+        )
 
     if args.use_vq_hist:
         if "indices" not in members.columns:
             raise SystemExit("VQ histogram mode requires an 'indices' column in cluster_members.")
+        require_columns(
+            members,
+            ("E_norm", "D_norm", "A_norm"),
+            "VQ histogram clustering summary",
+        )
 
         raw_indices = members["indices"].to_list()
         parsed_indices = np.array([np.asarray(row, dtype=int) for row in raw_indices])
@@ -287,6 +350,12 @@ def main() -> None:
             hist_clusterer,
             min_cluster_size,
             min_samples,
+            args.output_dir,
+            prefix="vq_hist_",
+        )
+        plot_vq_hist_embeddings(
+            js_dist,
+            hist_labels,
             args.output_dir,
             prefix="vq_hist_",
         )

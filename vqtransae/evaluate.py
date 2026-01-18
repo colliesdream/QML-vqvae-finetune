@@ -350,10 +350,20 @@ def evaluate_model(
         if clustered_mask.sum() > 1 and len(np.unique(labels[clustered_mask])) > 1:
             silhouette = float(silhouette_score(js_dist[clustered_mask][:, clustered_mask], labels[clustered_mask], metric="precomputed"))
 
-        for idx, label, prob in zip(anomaly_indices, labels, probs):
+        for idx, label, prob, feats, indices_row in zip(
+            anomaly_indices,
+            labels,
+            probs,
+            anomaly_features,
+            test_indices,
+        ):
             cluster_members.append({
                 'window_index': int(idx),
                 'cluster_id': int(label),
+                'E_norm': float(feats[0]),
+                'D_norm': float(feats[1]),
+                'A_norm': float(feats[2]),
+                'indices': [int(value) for value in indices_row],
                 'membership_probability': float(prob),
                 'is_noise': bool(label == -1),
             })
