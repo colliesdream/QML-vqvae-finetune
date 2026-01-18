@@ -9,7 +9,12 @@ from typing import Dict
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, silhouette_score
+
+try:
+    import hdbscan
+except ImportError:  # pragma: no cover - optional dependency
+    hdbscan = None
 
 from .config import Config
 from .data import create_dataloaders
@@ -26,6 +31,7 @@ def compute_scores(model, data_loader, device) -> Dict[str, np.ndarray]:
     recon_errors = []
     quant_dists = []
     attention_scores = []
+    indices_list = []
     all_labels = []
     all_speeds = []
 
@@ -44,6 +50,7 @@ def compute_scores(model, data_loader, device) -> Dict[str, np.ndarray]:
             quantized = model.quant.embed(indices.view(-1)).view_as(z_e)
             q_dist = (z_e - quantized).pow(2).sum(dim=2).mean(dim=1)
             quant_dists.append(q_dist.cpu().numpy())
+            indices_list.append(indices.view(B, T).cpu().numpy())
 
             attn = attn_list[-1].mean(dim=1).clamp_min(1e-9)
             t_dim = attn.shape[-1]
@@ -60,9 +67,37 @@ def compute_scores(model, data_loader, device) -> Dict[str, np.ndarray]:
         'E': np.nan_to_num(np.concatenate(recon_errors), nan=0.0, posinf=0.0, neginf=0.0),
         'D': np.nan_to_num(np.concatenate(quant_dists), nan=0.0, posinf=0.0, neginf=0.0),
         'A': np.nan_to_num(np.concatenate(attention_scores), nan=0.0, posinf=0.0, neginf=0.0),
+        'indices': np.concatenate(indices_list),
         'labels': np.concatenate(all_labels),
         'speeds': np.concatenate(all_speeds)
     }
+
+
+def build_histograms(indices: np.ndarray, codebook_size: int, eps: float = 1e-8) -> np.ndarray:
+    """Build L1-normalized code histograms from VQ indices."""
+    histograms = np.zeros((indices.shape[0], codebook_size), dtype=np.float32)
+    for i, row in enumerate(indices):
+        hist = np.bincount(row, minlength=codebook_size).astype(np.float32)
+        histograms[i] = hist
+    histograms = histograms + eps
+    histograms = histograms / histograms.sum(axis=1, keepdims=True)
+    return histograms
+
+
+def js_distance_matrix(histograms: np.ndarray) -> np.ndarray:
+    """Compute Jensen–Shannon distance matrix for histogram features."""
+    n, _ = histograms.shape
+    distance = np.zeros((n, n), dtype=np.float32)
+    log_h = np.log(histograms)
+    for i in range(n):
+        p = histograms[i]
+        log_p = log_h[i]
+        m = 0.5 * (histograms + p)
+        log_m = np.log(m)
+        kl_p = np.sum(p * (log_p - log_m), axis=1)
+        kl_q = np.sum(histograms * (log_h - log_m), axis=1)
+        distance[i] = np.sqrt(0.5 * (kl_p + kl_q))
+    return distance
 
 
 def compute_composite_score(scores: Dict, alpha: float, beta: float, gamma: float) -> np.ndarray:
@@ -199,6 +234,177 @@ def evaluate_model(
     print(f"\nThreshold: {threshold:.4f} ({percentile}th percentile of val)")
 
     metrics = evaluate_with_threshold(test_composite, test_labels, threshold)
+
+    # -----------------------------------------------------------------------
+    # Phase 5 clustering: anomaly windows only (HDBSCAN)
+    # -----------------------------------------------------------------------
+    anomaly_mask = test_composite > threshold
+    anomaly_indices = np.where(anomaly_mask)[0]
+    anomaly_features = np.stack([E_norm, D_norm, A_norm], axis=1)[anomaly_mask]
+
+    cluster_summary = []
+    cluster_members = []
+    silhouette = None
+    noise_ratio = None
+
+    if anomaly_indices.size > 0 and hdbscan is not None:
+        min_cluster_size = max(2, Config.HDBSCAN_MIN_CLUSTER_SIZE)
+        min_samples = max(1, Config.HDBSCAN_MIN_SAMPLES)
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+        )
+        labels = clusterer.fit_predict(anomaly_features)
+        probs = clusterer.probabilities_
+
+        noise_ratio = float((labels == -1).mean())
+        clustered_mask = labels != -1
+        if clustered_mask.sum() > 1 and len(np.unique(labels[clustered_mask])) > 1:
+            silhouette = float(silhouette_score(anomaly_features[clustered_mask], labels[clustered_mask]))
+
+        for idx, label, prob, feats in zip(anomaly_indices, labels, probs, anomaly_features):
+            cluster_members.append({
+                'window_index': int(idx),
+                'cluster_id': int(label),
+                'E_norm': float(feats[0]),
+                'D_norm': float(feats[1]),
+                'A_norm': float(feats[2]),
+                'membership_probability': float(prob),
+                'is_noise': bool(label == -1),
+            })
+
+        unique_labels = sorted(set(labels) - {-1})
+        for label in unique_labels:
+            member_mask = labels == label
+            member_indices = anomaly_indices[member_mask]
+            member_feats = anomaly_features[member_mask]
+            center = member_feats.mean(axis=0, keepdims=True)
+            distances = np.linalg.norm(member_feats - center, axis=1)
+            rep_order = np.argsort(distances)
+            representative_indices = [int(member_indices[i]) for i in rep_order[:5]]
+
+            cluster_summary.append({
+                'cluster_id': int(label),
+                'size': int(member_mask.sum()),
+                'proportion': float(member_mask.mean()),
+                'mean_E_norm': float(member_feats[:, 0].mean()),
+                'mean_D_norm': float(member_feats[:, 1].mean()),
+                'mean_A_norm': float(member_feats[:, 2].mean()),
+                'representative_indices': representative_indices,
+                'member_indices': [int(idx) for idx in member_indices],
+                'stability': float(clusterer.cluster_persistence_[label]),
+            })
+
+        summary_path = output_path / 'cluster_summary.json'
+        members_path = output_path / 'cluster_members.json'
+        save_json(cluster_summary, summary_path)
+        save_json(cluster_members, members_path)
+
+        cluster_summary_sorted = sorted(cluster_summary, key=lambda item: item['size'], reverse=True)
+        size_sorted_path = output_path / 'cluster_summary_by_size.json'
+        save_json(cluster_summary_sorted, size_sorted_path)
+
+        stability_sorted = sorted(cluster_summary, key=lambda item: item['stability'], reverse=True)
+        stability_sorted_path = output_path / 'cluster_summary_by_stability.json'
+        save_json(stability_sorted, stability_sorted_path)
+
+        print("\n" + "=" * 70)
+        print("Phase 5: HDBSCAN clustering (test anomalies)")
+        print("=" * 70)
+        print(f"Anomalies clustered: {anomaly_indices.size}")
+        print(f"Clusters found: {len(cluster_summary)}")
+        print(f"Noise ratio: {noise_ratio:.4f}")
+        if silhouette is not None:
+            print(f"Silhouette score: {silhouette:.4f}")
+        print(f"HDBSCAN min_cluster_size: {min_cluster_size}")
+        print(f"HDBSCAN min_samples: {min_samples}")
+    elif anomaly_indices.size == 0:
+        print("\nNo anomalies above threshold; skipping clustering.")
+    else:
+        print("\nHDBSCAN is not installed; skipping clustering.")
+
+    # -----------------------------------------------------------------------
+    # Phase 6 clustering: VQ histogram features + JS distance (test anomalies)
+    # -----------------------------------------------------------------------
+    if anomaly_indices.size > 0 and hdbscan is not None:
+        test_indices = test_scores['indices'][anomaly_mask]
+        codebook_size = model.quant.embed.num_embeddings
+        histograms = build_histograms(test_indices, codebook_size)
+        js_dist = js_distance_matrix(histograms).astype(np.float64)
+
+        min_cluster_size = max(2, Config.HDBSCAN_MIN_CLUSTER_SIZE)
+        min_samples = max(1, Config.HDBSCAN_MIN_SAMPLES)
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            metric="precomputed",
+        )
+        labels = clusterer.fit_predict(js_dist)
+        probs = clusterer.probabilities_
+
+        cluster_summary = []
+        cluster_members = []
+        noise_ratio = float((labels == -1).mean())
+        clustered_mask = labels != -1
+        silhouette = None
+        if clustered_mask.sum() > 1 and len(np.unique(labels[clustered_mask])) > 1:
+            silhouette = float(silhouette_score(js_dist[clustered_mask][:, clustered_mask], labels[clustered_mask], metric="precomputed"))
+
+        for idx, label, prob, feats, indices_row in zip(
+            anomaly_indices,
+            labels,
+            probs,
+            anomaly_features,
+            test_indices,
+        ):
+            cluster_members.append({
+                'window_index': int(idx),
+                'cluster_id': int(label),
+                'E_norm': float(feats[0]),
+                'D_norm': float(feats[1]),
+                'A_norm': float(feats[2]),
+                'indices': [int(value) for value in indices_row],
+                'membership_probability': float(prob),
+                'is_noise': bool(label == -1),
+            })
+
+        unique_labels = sorted(set(labels) - {-1})
+        for label in unique_labels:
+            member_mask = labels == label
+            member_indices = anomaly_indices[member_mask]
+            member_probs = probs[member_mask]
+            rep_order = np.argsort(-member_probs)
+            representative_indices = [int(member_indices[i]) for i in rep_order[:5]]
+
+            cluster_summary.append({
+                'cluster_id': int(label),
+                'size': int(member_mask.sum()),
+                'proportion': float(member_mask.mean()),
+                'representative_indices': representative_indices,
+                'member_indices': [int(idx) for idx in member_indices],
+                'stability': float(clusterer.cluster_persistence_[label]),
+            })
+
+        summary_path = output_path / 'cluster_summary_vq_hist.json'
+        members_path = output_path / 'cluster_members_vq_hist.json'
+        save_json(cluster_summary, summary_path)
+        save_json(cluster_members, members_path)
+
+        cluster_summary_sorted = sorted(cluster_summary, key=lambda item: item['size'], reverse=True)
+        save_json(cluster_summary_sorted, output_path / 'cluster_summary_vq_hist_by_size.json')
+        stability_sorted = sorted(cluster_summary, key=lambda item: item['stability'], reverse=True)
+        save_json(stability_sorted, output_path / 'cluster_summary_vq_hist_by_stability.json')
+
+        print("\n" + "=" * 70)
+        print("Phase 6: HDBSCAN clustering (VQ hist + JS distance)")
+        print("=" * 70)
+        print(f"Anomalies clustered: {anomaly_indices.size}")
+        print(f"Clusters found: {len(cluster_summary)}")
+        print(f"Noise ratio: {noise_ratio:.4f}")
+        if silhouette is not None:
+            print(f"Silhouette score: {silhouette:.4f}")
+        print(f"HDBSCAN min_cluster_size: {min_cluster_size}")
+        print(f"HDBSCAN min_samples: {min_samples}")
 
     print("\n" + "=" * 70)
     print("Eval metrics")
